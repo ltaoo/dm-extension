@@ -1,0 +1,30 @@
+{
+  "manifest_version": 3,
+  "name": "Download & Manage",
+  "version": "26.8.30",
+  "version_name": "v260830",
+  "minimum_chrome_version": "120",
+  "description": "Download & Manage 浏览器扩展，集中管理站点数据与应用设置。",
+  "permissions": ["activeTab", "cookies", "scripting", "storage", "alarms", "clipboardWrite"],
+  "host_permissions": ["http://*/*", "https://*/*"],
+  "icons": {
+    "16": "assets/icons/icon-16.png",
+    "32": "assets/icons/icon-32.png",
+    "48": "assets/icons/icon-48.png",
+    "128": "assets/icons/icon-128.png"
+  },
+  "action": {
+    "default_title": "Download & Manage",
+    "default_popup": "src/popup/popup.html",
+    "default_icon": {
+      "16": "assets/icons/icon-16.png",
+      "24": "assets/icons/icon-24.png",
+      "32": "assets/icons/icon-32.png",
+      "48": "assets/icons/icon-48.png"
+    }
+  },
+  "background": {
+    "service_worker": "src/background.js",
+    "type": "module"
+  }
+}
