@@ -1,0 +1,86 @@
+<!doctype html><html data-n="test-document"><head data-n="test-head"><meta charset="utf-8">
+<link rel="stylesheet" href="../assets/vendor/src/dmui.css" data-n="component-style" />
+<link rel="stylesheet" href="../src/popup/popup.css" data-n="popup-style" />
+</head><body data-n="test-body">
+<div id="root" data-n="popup-root"></div>
+<script data-n="test-stub">
+  // popup.js / store.js 顶层取全局 chrome（getManifest 在模块加载时执行），必须先桩好。
+  const created_tabs = [];
+  globalThis.__created_tabs = created_tabs;
+  globalThis.chrome = {
+    runtime: {
+      getManifest: () => ({ version_name: "v260830", version: "26.8.30" }),
+      getURL: (path) => `chrome-extension://test/${path}`,
+      sendMessage: async () => ({ success: true, profiles: [{
+        id: "default", name: "默认", enabled: false, endpoint: "http://127.0.0.1:2022/api/cookies/update", intervalMinutes: 60,
+        encryption: { method: "none", uuid: "", password: "" }, domainFilter: { domains: [] },
+      }], statuses: {} }),
+    },
+    storage: {
+      local: {
+        get: async (keys) => {
+          const data = {
+            "popup-page": "savepage",
+            "page-parsers": [],
+            "comparison-group": "分组 1",
+            "comparison-records": [
+              { id: "1", group: "分组 1", title: "A", url: "https://a.test/", html: '<html><body><div id="a">甲</div></body></html>', created_at: 1 },
+              { id: "2", group: "分组 1", title: "B", url: "https://b.test/", html: '<html><body><div id="a">甲</div><div id="b">乙</div></body></html>', created_at: 2 },
+              { id: "3", group: "分组 1", title: "C", url: "https://c.test/", html: '<html><body><div id="b">乙</div></body></html>', created_at: 3 },
+              { id: "4", group: "分组 2", title: "D", url: "https://d.test/", html: "<html><body><p>丁</p></body></html>", created_at: 4 },
+            ],
+          };
+          const wanted = Array.isArray(keys) ? keys : [keys];
+          return Object.fromEntries(wanted.filter(Boolean).map((key) => [key, data[key]]));
+        },
+        set: async () => {},
+        remove: async () => {},
+      },
+      onChanged: { addListener() {}, removeListener() {} },
+    },
+    tabs: {
+      query: async () => [{ id: 1, url: "https://example.com/", title: "示例" }],
+      create: async (options) => { created_tabs.push(options.url); return {}; },
+    },
+    cookies: { getAllCookieStores: async () => [{ id: "0", tabIds: [1] }], getAll: async () => [] },
+    scripting: {
+      executeScript: async () => [{ result: {
+        title: "示例页面", url: "https://example.com/", parser: "generic",
+        html: "<html><body><p>内容</p></body></html>", images: [], videos: [], files: [],
+      } }],
+    },
+  };
+</script>
+<script type="module" data-n="test-script">
+window.addEventListener("error", (event) => document.body.setAttribute("data-test-error", event.message));
+window.addEventListener("unhandledrejection", (event) => document.body.setAttribute("data-test-error", String((event.reason && event.reason.message) || event.reason)));
+await import("../src/popup/popup.js");
+
+await new Promise((resolve) => {
+  const started = Date.now();
+  const check = () => {
+    const rows = document.querySelectorAll(".comparison-record-row");
+    if (rows.length === 3 || Date.now() - started > 8000) resolve();
+    else setTimeout(check, 100);
+  };
+  check();
+});
+
+// 暂存列表仅显示当前选中分组（分组 1 的 A/B/C，不含分组 2 的 D）。
+const rows = Array.from(document.querySelectorAll(".comparison-record-row"));
+if (rows.length !== 3) throw new Error(`当前分组应显示 3 条记录，实际 ${rows.length}`);
+const titles = Array.from(document.querySelectorAll(".comparison-record-open")).map((button) => button.textContent.trim());
+if (titles.join("|") !== "1. A|2. B|3. C") throw new Error(`记录标题错误：${titles.join("|")}`);
+if (document.querySelector("#root").textContent.includes("4. D")) throw new Error("其它分组的记录不应显示");
+if (document.querySelectorAll(".comparison-record-remove").length !== 3) throw new Error("每条记录应有删除按钮");
+const count = document.querySelector(".comparison-count");
+if (!count || !count.textContent.includes("已暂存 3 条")) throw new Error(`计数应为当前分组条数：${count && count.textContent}`);
+
+// 点击记录 → 新标签页打开该记录的预览。
+document.querySelector(".comparison-record-open").click();
+await new Promise((resolve) => setTimeout(resolve, 200));
+if (!globalThis.__created_tabs.some((url) => url.includes("src/compare/preview.html") && url.includes("id=1"))) {
+  throw new Error(`点击记录应打开预览页，实际打开：${globalThis.__created_tabs.join("、")}`);
+}
+document.body.setAttribute("data-test-passed", "");
+</script></body></html>

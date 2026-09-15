@@ -50,6 +50,7 @@ body { color: var(--dm-color-text-primary); background: var(--dm-color-bg-canvas
 .savepage-view { width: 52px; }
 .savepage-view.is-active, .savepage-view.is-active:hover { color: var(--dm-color-primary); background: var(--dm-color-primary-soft); }
 .savepage-actions .savepage-summary { margin-right: auto; }
+.savepage-actions .comparison-count { margin-left: auto; }
 .savepage-actions .savepage-size { flex: none; font-variant-numeric: tabular-nums; }
 .savepage-site { flex: 1; min-width: 0; }
 .savepage-url { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 5px; color: var(--dm-color-text-secondary); font-size: 11px; }
@@ -59,6 +60,16 @@ body { color: var(--dm-color-text-primary); background: var(--dm-color-bg-canvas
 .savepage-textarea-root { flex: 1; min-height: 0; }
 .savepage-page .dm-textarea { flex: 1; min-height: 0; height: 100%; resize: none; font-family: var(--dm-font-family-mono); font-size: 11px; line-height: 1.5; white-space: pre; overflow: auto; }
 .page-copy.is-copied, .page-copy.is-copied:hover { color: var(--dm-color-success); }
+.comparison-records { display: flex; flex-direction: column; gap: 6px; flex: 1; min-height: 0; overflow: auto; padding: 10px; border: 1px solid var(--dm-color-border); border-radius: 8px; background: var(--dm-color-bg-surface); }
+.comparison-record-row { display: flex; align-items: center; gap: 6px; flex: none; }
+.comparison-record-open { flex: 1 1 auto; min-width: 0; justify-content: flex-start; }
+.comparison-record-open > * { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.comparison-record-remove { flex: none; }
+.savepage-groups { display: flex; align-items: center; gap: 8px; flex: none; }
+.savepage-groups .section-title { flex: none; }
+.comparison-groups { flex: 1; min-width: 0; overflow-x: auto; background: var(--dm-color-bg-surface); border-color: var(--dm-color-border); }
+.comparison-group-tab { flex: none; }
+.comparison-group-tab.is-active { color: var(--dm-color-primary); background: var(--dm-color-primary-soft); }
 .settings-page { flex-direction: row; }
 .settings-sidebar { flex: none; width: 108px; padding: 12px 8px; border-right: 1px solid var(--dm-color-border); background: var(--dm-color-bg-surface); }
 .settings-menu-button { width: 100%; }

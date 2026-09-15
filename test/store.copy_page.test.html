@@ -1,0 +1,48 @@
+<!doctype html><html data-n="test-document"><head data-n="test-head"><meta charset="utf-8"></head><body data-n="test-body"><script type="module" data-n="test-script">
+// store.js 在模块级执行 CookieViewModel() 创建单例，普通页面没有 chrome 对象；
+// 先注入最小 chrome 桩再动态导入，随后各用例仍以显式假 client 驱动。
+globalThis.chrome = { runtime: { getManifest: () => ({ version: "0.0.0" }) } };
+const { CookieViewModel } = await import("../src/models/store.js");
+
+// CookieViewModel 通过依赖注入接收 chrome client 与剪贴板，可直接用假实现驱动。
+function create_client(page) {
+  return {
+    runtime: { getManifest: () => ({ version: "0.0.0" }) },
+    tabs: { query: async () => [{ id: 1, url: "https://example.com/page" }] },
+    scripting: { executeScript: async () => [{ result: page }] },
+  };
+}
+const sample = { title: "示例页", url: "https://example.com/page", parser: "generic", html: "<html><head><title>示例页</title></head><body><main><p>内容</p></main></body></html>", images: [], videos: [], files: [] };
+
+// 未获取到页面内容：提示且不写剪贴板。
+{
+  const written = [];
+  const store = CookieViewModel(create_client(null), { writeText: async (text) => written.push(text) });
+  await store.methods.copy_page();
+  if (store.state.savepage_feedback.value !== "没有可复制的页面内容") throw new Error("无内容时应提示「没有可复制的页面内容」");
+  if (written.length) throw new Error("无内容时不应写剪贴板");
+}
+
+// 成功：写入完整 HTML，反馈字符数并进入已复制状态。
+{
+  const written = [];
+  const store = CookieViewModel(create_client(sample), { writeText: async (text) => written.push(text) });
+  await store.methods.refresh_page();
+  if (store.state.page_html.value !== sample.html) throw new Error("前置条件：应先成功读取页面 HTML");
+  await store.methods.copy_page();
+  if (written[0] !== sample.html) throw new Error("剪贴板应写入完整页面 HTML");
+  if (store.state.savepage_copied.value !== true) throw new Error("复制成功后应进入已复制状态");
+  if (store.state.savepage_feedback.value !== `已复制 ${sample.html.length.toLocaleString()} 个字符`) throw new Error("应反馈复制的字符数");
+}
+
+// 失败：剪贴板拒绝时不进入已复制状态，反馈错误信息。
+{
+  const store = CookieViewModel(create_client(sample), { writeText: async () => { throw new Error("clipboard denied"); } });
+  await store.methods.refresh_page();
+  await store.methods.copy_page();
+  if (store.state.savepage_copied.value !== false) throw new Error("复制失败不应进入已复制状态");
+  if (store.state.savepage_feedback.value !== "复制失败：clipboard denied") throw new Error("应反馈复制失败原因");
+}
+
+document.body.textContent = "store copy_page checks passed";
+</script></body></html>

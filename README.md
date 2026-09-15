@@ -3,7 +3,7 @@
 Chrome（120+）Manifest V3 扩展，提供三块能力：
 
 - **Cookie**：在弹窗中查看当前站点 Cookie（含 HttpOnly），勾选后复制为 `name=value; ...`。
-- **SavePage**：读取当前标签页清洗后的 HTML（移除全部 `script` 标签），或导出结构化 JSON；飞书文档额外识别图片、视频、附件并替换为占位符。
+- **对比**：暂存当前标签页移除 `script` 后的 HTML（可复制到粘贴板），并在新标签页对**当前选中分组**按「每条记录与其前一条对比」横向渲染、高亮差异并列出新增/移除清单。
 - **设置**：管理多个 Cookie 同步接口配置（地址、域名范围、加密、定时），以及 SavePage 的域名 → 解析器映射。
 
 无构建步骤、无 CDN、无依赖安装，本目录即为可加载的完整扩展。
@@ -21,16 +21,11 @@ Chrome（120+）Manifest V3 扩展，提供三块能力：
 
 在普通 HTTP(S) 页面点击扩展图标即可查看、全选／勾选并复制 Cookie。勾选只影响复制；上传范围由各同步接口自己的域名列表控制。
 
-### SavePage
+### 对比
 
-打开弹窗时读取当前标签页 `document.documentElement` 的 HTML（克隆后移除全部 `script` 标签），显示在只读文本框中，可复制或重新获取。非 HTTP(S) 页面或注入失败时显示提示且不展示内容。读取通过 `chrome.scripting.executeScript` 注入完成，依赖 `activeTab` + `scripting` 权限，只在点击扩展图标时对当前标签页生效，不持久化页面内容。
+打开弹窗时读取当前标签页 `document.documentElement` 的 HTML（克隆后移除全部 `script` 标签）。点击「暂存」可把当前页面保存到当前选中分组；点击「复制」可把当前页面 HTML 复制到粘贴板（反馈字符数，成功后按钮显示「已复制」3 秒）；通过「分组」标签可切换分组或「新增分组」。弹窗中的暂存列表**只显示当前分组内的记录**：点击记录在新标签页打开渲染预览（`src/compare/preview.html`），每条记录可单独「删除」（有确认），「清空」仅清空当前分组、不影响其它分组。在当前选中分组内暂存至少两条记录后点击「开始对比」，会在新标签页只渲染该分组：各记录横向并排，内容按面板宽度 100% 渲染、iframe 高度随内容自适应，页面纵向滚动查看。对比永远以前一条记录为基准：第 1 条是基准页，之后每条在页面内高亮相对前一条的差异——新增元素绿框、被移除的节点克隆回当前页**原位置**并用红色半透明遮罩盖住、附「删除」角标（直接看出页面哪里被删了）、属性或结构差异描边整个元素、纯文本差异精确高亮到具体文字；面板标题下方同时给出「新增 N · 移除 N」简报与节点清单（悬停查看路径），简报行的 ↑/↓ 可在本面板全部变更间循环跳转、自动滚动到视口居中；新增/移除按广度优先顺序记录且只记最顶层节点。记录保存在 `chrome.storage.local`。
 
-工具栏的 **HTML / JSON** 切换决定展示与复制的内容：
-
-- HTML：清洗后的页面源码。
-- JSON：`{ title, url, parser, html, images[], videos[], files[] }` 结构，供程序消费与下载。
-
-飞书文档（`*.feishu.cn` / `*.feishu-doc.cn` / `*.larksuite.com` / `*.larkoffice.com`）会额外提取资源：图片取 `img[src]` 与 `data-src` 懒加载图；视频取 `video[src]`、`source[src]` 及视频扩展名的 `data-src`；文件取带 `download`、常见附件扩展名或飞书资源地址的链接。界面元素（头像、表情、工具栏等）按类名关键字排除。识别结果按文档顺序编号，同名资源复用首次编号，页面对应节点替换为 `{{IMAGE:1}}` / `{{VIDEO:1}}` / `{{FILE:1}}` 占位符；三条列表记录 `index / url / name / token`，图片带宽高，视频带封面。飞书文档默认展示 JSON 视图，其他页面默认 HTML 视图且不做资源提取。
+飞书文档（`*.feishu.cn` / `*.feishu-doc.cn` / `*.larksuite.com` / `*.larkoffice.com`）会额外提取资源：图片取 `img[src]` 与 `data-src` 懒加载图；视频取 `video[src]`、`source[src]` 及视频扩展名的 `data-src`；文件取带 `download`、常见附件扩展名或飞书资源地址的链接。界面元素（头像、表情、工具栏等）按类名关键字排除。识别结果按文档顺序编号，同名资源复用首次编号，页面对应节点替换为 `{{IMAGE:1}}` / `{{VIDEO:1}}` / `{{FILE:1}}` 占位符。
 
 自建域名部署的飞书不落在 `*.feishu.cn` 上。设置页「SavePage 解析」提供域名 → 解析器映射：每行一个域名 + 解析器（飞书文档 / 通用），`example.com` 匹配自身及所有子域，也接受 `*.example.com` 或完整 URL。默认内置 `larkenterprise.com → 飞书文档`；上述飞书官方域名始终按飞书文档解析。未匹配的域名走「通用」。规则保存在 `chrome.storage.local` 的 `page-parsers` 键下，切换规则后点「重新获取」重新解析。
 
@@ -77,6 +72,6 @@ scripts/             # 图标导出与 UI 资产同步脚本
 
 ## 开发检查
 
-本目录无测试与构建命令。改动后手动验证：加载扩展 → 打开任一 HTTP(S) 页面 → 依次检查 Cookie、SavePage（HTML/JSON）、设置页保存与同步流程。
+本目录无构建命令。对比算法可直接用浏览器打开 `test/compare.model.test.html`（逐对 diff、报告与预览构建）、`test/compare.render.test.html`（对比页渲染）、`test/compare.preview.test.html`（单页预览）、`test/popup.savepage.test.html`（弹窗暂存列表）检查；扩展改动后手动验证：加载扩展 → 打开任一 HTTP(S) 页面 → 暂存至少两条记录 → 开始对比。
 
 Chrome API 依据：[模块 Service Worker](https://developer.chrome.com/docs/extensions/develop/concepts/service-workers/basics)、[Cookie 权限](https://developer.chrome.com/docs/extensions/reference/api/cookies)、[定时任务](https://developer.chrome.com/docs/extensions/reference/api/alarms)、[脚本注入](https://developer.chrome.com/docs/extensions/reference/api/scripting)。
