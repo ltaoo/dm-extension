@@ -1,12 +1,15 @@
 import "../../assets/vendor/timeless.umd.min.js";
 import { createInputStore, createCheckboxStore } from "../../assets/vendor/src/dmui.js";
 import { default_settings, status_key, validate_settings } from "./sync.model.js";
+import { default_comparison_group, group_comparison_records } from "../compare/compare.model.js";
 
 const { ref, computed, combine, vm } = globalThis.Timeless;
 
 // 页面解析器：内置飞书域名 + 用户配置的域名规则共同决定。
 const PARSER_LABELS = { generic: "通用", feishu: "飞书文档" };
 const parsers_key = "page-parsers";
+const comparison_records_key = "comparison-records";
+const comparison_group_key = "comparison-group";
 
 function default_parsers() {
   return [{ id: "larkenterprise", domain: "larkenterprise.com", parser: "feishu" }];
@@ -214,7 +217,6 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
   const page_images_ = ref([]);
   const page_videos_ = ref([]);
   const page_files_ = ref([]);
-  const page_view_ = ref("html");
   const page_parser_ = ref("generic");
   const page_parsers_ = ref([]);
   const settings_menu_ = ref("cookie-sync");
@@ -223,6 +225,18 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
   const savepage_feedback_ = ref("");
   const savepage_copied_ = ref(false);
   const savepage_loading_ = ref(false);
+  const comparison_records_ = ref([]);
+  const comparison_group_ = ref(default_comparison_group);
+  const comparison_groups_ = combine({ records: comparison_records_, active: comparison_group_ }, ({ records, active }) => {
+    const names = group_comparison_records(records).map((group) => group.name);
+    if (active && !names.includes(active)) names.push(active);
+    return names.map((name) => ({ name }));
+  });
+  // 当前选中分组内的记录：弹窗列表、计数与「开始对比」可用性都以它为准。
+  const comparison_current_ = combine({ records: comparison_records_, group: comparison_group_ }, ({ records, group }) => {
+    const current = group_comparison_records(records).find((item) => item.name === group);
+    return current ? current.records : [];
+  });
   let page_transition_timer;
   let copy_feedback_timer;
   let savepage_copy_timer;
@@ -230,14 +244,9 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
   let hydrating_domains = false;
   const profile_buttons = new Map();
   const domain_buttons = new Map();
+  const group_buttons = new Map();
+  const record_buttons = new Map();
   const selected_cookies_ = combine({ cookies: cookies_, selected: selected_ }, ({ cookies, selected }) => cookies.filter((_, index) => selected.has(index)));
-  const page_feishu_ = computed(page_parser_, (parser) => parser === "feishu");
-  const page_output_ = combine({
-    view: page_view_, html: page_html_, title: page_title_, url: url_, parser: page_parser_,
-    images: page_images_, videos: page_videos_, files: page_files_,
-  }, (page) => page.view === "json"
-    ? JSON.stringify({ title: page.title, url: page.url, parser: page.parser, html: page.html, images: page.images, videos: page.videos, files: page.files }, null, 2)
-    : page.html);
 
   async function refresh() {
     if (loading_.value) return;
@@ -297,7 +306,6 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
     if (savepage_loading_.value) return;
     savepage_loading_.as(true);
     savepage_feedback_.as("");
-    savepage_copied_.as(false);
     try {
       const [tab] = await client.tabs.query({ active: true, currentWindow: true });
       if (tab?.url) url_.as(tab.url);
@@ -312,7 +320,6 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
       page_images_.as(Array.isArray(result.images) ? result.images : []);
       page_videos_.as(Array.isArray(result.videos) ? result.videos : []);
       page_files_.as(Array.isArray(result.files) ? result.files : []);
-      page_view_.as(result.feishu ? "json" : "html");
     } catch (error) {
       page_html_.as("");
       page_title_.as("");
@@ -412,6 +419,12 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
           if (!navigated && ["cookie", "settings", "savepage"].includes(saved["popup-page"])) page_.as(saved["popup-page"]);
         }).catch((error) => message_.as(error.message)),
         load_parsers(),
+        client.storage.local.get(comparison_records_key).then((saved) => {
+          comparison_records_.as(Array.isArray(saved[comparison_records_key]) ? saved[comparison_records_key] : []);
+        }).catch((error) => savepage_feedback_.as(`读取暂存记录失败：${error.message}`)),
+        client.storage.local.get(comparison_group_key).then((saved) => {
+          if (typeof saved[comparison_group_key] === "string" && saved[comparison_group_key]) comparison_group_.as(saved[comparison_group_key]);
+        }).catch(() => {}),
         refresh(),
         send("get").catch((error) => message_.as(error.message)),
       ]);
@@ -494,14 +507,37 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
       })));
       save_parsers();
     },
-    set_view(view) {
-      if (!["html", "json"].includes(view) || view === page_view_.value) return;
-      clearTimeout(savepage_copy_timer);
-      savepage_copied_.as(false);
-      page_view_.as(view);
+    select_group(name) {
+      if (!name || name === comparison_group_.value) return;
+      comparison_group_.as(name);
+      client.storage.local.set({ [comparison_group_key]: name }).catch(() => {});
+    },
+    add_group() {
+      const names = new Set(comparison_groups_.value.map((group) => group.name));
+      let index = 1;
+      while (names.has(`分组 ${index}`)) index += 1;
+      methods.select_group(`分组 ${index}`);
+    },
+    async stage_page() {
+      if (!page_html_.value) return savepage_feedback_.as("没有可暂存的页面内容");
+      const records = [...comparison_records_.value, {
+        id: crypto.randomUUID(),
+        group: comparison_group_.value,
+        title: page_title_.value || url_.value || `记录 ${comparison_records_.value.length + 1}`,
+        url: url_.value,
+        html: page_html_.value,
+        created_at: Date.now(),
+      }];
+      try {
+        await client.storage.local.set({ [comparison_records_key]: records });
+        comparison_records_.as(records);
+        savepage_feedback_.as(`已暂存：${records.at(-1).title}`);
+      } catch (error) {
+        savepage_feedback_.as(`暂存失败：${error.message}`);
+      }
     },
     async copy_page() {
-      const content = page_output_.value;
+      const content = page_html_.value;
       if (!content) return savepage_feedback_.as("没有可复制的页面内容");
       clearTimeout(savepage_copy_timer);
       try {
@@ -512,6 +548,49 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
       } catch (error) {
         savepage_copied_.as(false);
         savepage_feedback_.as(`复制失败：${error.message}`);
+      }
+    },
+    async remove_record(id) {
+      const record = comparison_records_.value.find((item) => item.id === id);
+      if (!record) return;
+      if (!confirm_remove(`删除暂存记录「${record.title}」？`)) return;
+      const records = comparison_records_.value.filter((item) => item.id !== id);
+      try {
+        await client.storage.local.set({ [comparison_records_key]: records });
+        comparison_records_.as(records);
+        savepage_feedback_.as(`已删除：${record.title}`);
+      } catch (error) {
+        savepage_feedback_.as(`删除失败：${error.message}`);
+      }
+    },
+    async preview_record(id) {
+      const record = comparison_records_.value.find((item) => item.id === id);
+      if (!record) return savepage_feedback_.as("未找到对应的暂存记录");
+      try {
+        await client.tabs.create({ url: `${client.runtime.getURL("src/compare/preview.html")}?id=${encodeURIComponent(id)}` });
+      } catch (error) {
+        savepage_feedback_.as(`打开预览失败：${error.message}`);
+      }
+    },
+    async clear_comparisons() {
+      const group_of = (record) => (typeof record.group === "string" && record.group.trim() ? record.group : default_comparison_group);
+      // 只清空当前选中分组；其它分组的记录保留。
+      const remaining = comparison_records_.value.filter((record) => group_of(record) !== comparison_group_.value);
+      try {
+        if (remaining.length) await client.storage.local.set({ [comparison_records_key]: remaining });
+        else await client.storage.local.remove(comparison_records_key);
+        comparison_records_.as(remaining);
+        savepage_feedback_.as(`已清空分组「${comparison_group_.value}」的暂存记录`);
+      } catch (error) {
+        savepage_feedback_.as(`清空失败：${error.message}`);
+      }
+    },
+    async start_comparison() {
+      if (!state.comparison_ready.value) return savepage_feedback_.as("请先在当前分组暂存至少两个页面");
+      try {
+        await client.tabs.create({ url: client.runtime.getURL("src/compare/compare.html") });
+      } catch (error) {
+        savepage_feedback_.as(`打开对比页失败：${error.message}`);
       }
     },
     async save(sync = false) {
@@ -539,7 +618,7 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
       can_remove: combine({ profiles: profiles_, saved: saved_profiles_, active: active_profile_ }, (s) => s.profiles.length > 1 && (s.saved.length > 1 || !s.saved.some((profile) => profile.id === s.active))),
       page: page_,
       leaving_page: leaving_page_,
-      title: computed(page_, (page) => page === "cookie" ? "Cookie" : page === "settings" ? "设置" : "SavePage"),
+      title: computed(page_, (page) => page === "cookie" ? "Cookie" : page === "settings" ? "设置" : "对比"),
       version: ref(manifest.version_name || `v${manifest.version}`),
       cookies: cookies_, selected: selected_, settings: settings_, status: status_,
       url: url_, page_domain: page_domain_, message: message_, loading: loading_, busy: busy_,
@@ -551,10 +630,7 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
       sync_message: computed(status_, (status) => status.message + (status.lastSuccessAt ? ` · 最近成功 ${new Date(status.lastSuccessAt).toLocaleString()}` : "")),
       encrypted: computed(settings_, (settings) => settings.encryption.method !== "none"),
       page_html: page_html_,
-      page_output: page_output_,
-      page_view: page_view_,
       page_parser: page_parser_,
-      page_feishu: page_feishu_,
       page_parser_label: computed(page_parser_, (parser) => PARSER_LABELS[parser] || parser),
       page_title: page_title_,
       page_parsers: page_parsers_,
@@ -563,16 +639,15 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
       page_images: page_images_,
       page_videos: page_videos_,
       page_files: page_files_,
-      page_summary: combine({ parser: page_parser_, images: page_images_, videos: page_videos_, files: page_files_ }, (page) => [
-        PARSER_LABELS[page.parser] || page.parser,
-        `图片 ${page.images.length}`,
-        `视频 ${page.videos.length}`,
-        `文件 ${page.files.length}`,
-      ].filter(Boolean).join(" · ")),
       savepage_feedback: savepage_feedback_,
       savepage_copied: savepage_copied_,
       savepage_loading: savepage_loading_,
-      savepage_size: computed(page_output_, (content) => content.length),
+      comparison_records: comparison_records_,
+      comparison_groups: comparison_groups_,
+      comparison_group: comparison_group_,
+      comparison_current_records: computed(comparison_current_, (records) => records.map((record, index) => ({ ...record, index }))),
+      comparison_count: computed(comparison_current_, (records) => records.length),
+      comparison_ready: computed(comparison_current_, (records) => records.length >= 2),
   };
   const ui = {
     domain_copy_button(domain) {
@@ -582,6 +657,17 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
     profile_button(id) {
       if (!profile_buttons.has(id)) profile_buttons.set(id, new vm.ButtonCore({ variant: "ghost", size: "sm", onClick: () => methods.select_profile(id) }));
       return profile_buttons.get(id);
+    },
+    group_button(name) {
+      if (!group_buttons.has(name)) group_buttons.set(name, new vm.ButtonCore({ variant: "ghost", size: "sm", onClick: () => methods.select_group(name) }));
+      return group_buttons.get(name);
+    },
+    record_button(id) {
+      if (!record_buttons.has(id)) record_buttons.set(id, {
+        open: new vm.ButtonCore({ variant: "ghost", size: "sm", onClick: () => methods.preview_record(id) }),
+        remove: new vm.ButtonCore({ variant: "ghost", size: "sm", onClick: () => methods.remove_record(id) }),
+      });
+      return record_buttons.get(id);
     },
     domains$: new vm.ArrayFieldCore({
       label: "域名列表",
@@ -617,18 +703,19 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
     add_parser$: new vm.ButtonCore({ variant: "outline", size: "sm", onClick: methods.add_parser }),
     add_domain$: new vm.ButtonCore({ variant: "outline", size: "sm", onClick: methods.add_domain }),
     add_profile$: new vm.ButtonCore({ variant: "outline", size: "sm", onClick: methods.add_profile }),
+    add_group$: new vm.ButtonCore({ variant: "outline", size: "sm", onClick: methods.add_group }),
     remove_profile$: new vm.ButtonCore({ variant: "ghost", size: "sm", onClick: methods.remove_profile }),
     menu: [
       { name: "cookie", title: "Cookie", icon: "file-lock" },
-      { name: "savepage", title: "SavePage", icon: "file-code" },
+      { name: "savepage", title: "对比", icon: "file-code" },
       { name: "settings", title: "设置", icon: "settings" },
     ].map((item) => ({ ...item, button$: new vm.ButtonCore({ variant: "ghost", onClick: () => methods.navigate(item.name) }) })),
     refresh$: new vm.ButtonCore({ variant: "outline", size: "sm", onClick: refresh }),
     refresh_page$: new vm.ButtonCore({ variant: "outline", size: "sm", onClick: refresh_page }),
-    copy_page$: new vm.ButtonCore({ variant: "primary", size: "sm", onClick: () => methods.copy_page() }),
-    view_html$: new vm.ButtonCore({ variant: "ghost", size: "sm", onClick: () => methods.set_view("html") }),
-    view_json$: new vm.ButtonCore({ variant: "ghost", size: "sm", onClick: () => methods.set_view("json") }),
-    page_html$: createInputStore({ allowClear: false, onChange() {} }),
+    stage_page$: new vm.ButtonCore({ variant: "outline", size: "sm", onClick: methods.stage_page }),
+    copy_page$: new vm.ButtonCore({ variant: "outline", size: "sm", onClick: methods.copy_page }),
+    clear_comparisons$: new vm.ButtonCore({ variant: "ghost", size: "sm", onClick: methods.clear_comparisons }),
+    start_comparison$: new vm.ButtonCore({ variant: "primary", size: "sm", onClick: methods.start_comparison }),
     copy_domain$: new vm.ButtonCore({ variant: "outline", size: "sm", onClick: () => methods.copy_domain() }),
     copy_all$: new vm.ButtonCore({ variant: "outline", size: "sm", onClick: () => methods.copy(true) }),
     copy_selected$: new vm.ButtonCore({ variant: "primary", size: "sm", onClick: () => methods.copy() }),
@@ -660,10 +747,6 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
       onChange: (value) => methods.update(field, value),
     });
   }
-  // 展示用：只把抓取结果同步进文本框，不回写，避免误改内容。
-  page_output_.subscribe({ onChange(content) {
-    if (ui.page_html$.value !== content) ui.page_html$.setValue(content, { silence: true });
-  } });
   page_parsers_.subscribe({ onChange(list) {
     const rows = list.map((item) => ({ domain: item.domain, parser: item.parser }));
     const current = ui.parsers$.value || [];
@@ -684,7 +767,10 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
   for (const [source, button] of [
     [loading_, ui.refresh$],
     [savepage_loading_, ui.refresh_page$],
-    [computed(page_output_, (content) => !content), ui.copy_page$],
+    [computed(page_html_, (content) => !content), ui.stage_page$],
+    [computed(page_html_, (content) => !content), ui.copy_page$],
+    [computed(comparison_current_, (records) => !records.length), ui.clear_comparisons$],
+    [computed(state.comparison_ready, (ready) => !ready), ui.start_comparison$],
     [combine({ loading: loading_, domain: page_domain_ }, (s) => s.loading || !s.domain), ui.copy_domain$],
     [computed(cookies_, (cookies) => !cookies.length), ui.copy_all$],
     [computed(state.selected_count, (count) => !count), ui.copy_selected$],

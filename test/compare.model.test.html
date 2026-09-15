@@ -1,0 +1,164 @@
+<!doctype html><html data-n="test-document"><head data-n="test-head"><meta charset="utf-8"></head><body data-n="test-body"><script type="module" data-n="test-script">
+window.addEventListener("error", (event) => document.body.setAttribute("data-test-error", event.message));
+window.addEventListener("unhandledrejection", (event) => document.body.setAttribute("data-test-error", String((event.reason && event.reason.message) || event.reason)));
+import { ComparisonModel, build_comparison_documents, build_comparison_reports, build_preview_document, comparison_group_key, comparison_records_key, default_comparison_group, describe_node, group_comparison_records } from "../src/compare/compare.model.js";
+const output = build_comparison_documents([
+  { title: "A", url: "https://a.test/", html: "<html><body><main><p>相同</p><b>旧</b></main></body></html>" },
+  { title: "B", url: "https://b.test/", html: "<html><body><main><p>相同</p><b>新</b></main></body></html>" },
+]);
+if (!output[1].includes("<mark data-compare-text-diff")) throw new Error("当前页不同内容应在文本层高亮");
+if (!output[1].includes(">新</mark>")) throw new Error("应精确高亮差异文本");
+if (!output[1].includes("与 1. A 存在差异")) throw new Error("应标明基准记录");
+if (!output[1].includes("<p>相同</p>")) throw new Error("应保留未变化的完整页面内容");
+if (output[0].includes("<mark") || output[0].includes('data-compare-added=""') || output[0].includes('data-compare-changed=""') || output[0].includes('data-compare-deleted=""')) throw new Error("基准页（首条）不应有任何标注");
+
+// 差异标记不得破坏 head 内的 style/title 等渲染元数据。
+const head_output = build_comparison_documents([
+  { title: "A", url: "https://a.test/", html: "<html><head><style>.x{color:red}</style><title>甲</title></head><body><p>相同</p></body></html>" },
+  { title: "B", url: "https://b.test/", html: "<html><head><style>.x{color:blue}</style><title>乙</title></head><body><p>相同</p></body></html>" },
+]);
+if (!head_output[1].includes(".x{color:blue}")) throw new Error("style 内容应保持原样");
+if (head_output[1].includes("<mark")) throw new Error("不应在 style/title 内注入差异标记");
+if (head_output[1].includes('data-compare-changed=""')) throw new Error("head 元数据差异不应标注");
+
+const groups = group_comparison_records([
+  { group: "分组 1", title: "A" },
+  { group: "分组 2", title: "B" },
+  { group: "分组 1", title: "C" },
+]);
+if (groups.length !== 2) throw new Error("应按分组归类");
+if (groups[0].name !== "分组 1" || groups[0].records.length !== 2) throw new Error("分组 1 成员数错误");
+if (groups[1].name !== "分组 2" || groups[1].records.length !== 1) throw new Error("分组 2 成员数错误");
+
+const ungrouped = group_comparison_records([{ title: "X" }]);
+if (ungrouped.length !== 1 || ungrouped[0].name !== default_comparison_group) throw new Error("缺少 group 时应归入默认分组");
+if (default_comparison_group !== "分组 1") throw new Error("默认分组名应为「分组 1」");
+
+// —— 逐对语义：永远以前一条为基准。 ——
+
+// 末尾追加：[div#a, div#b] → [div#a, div#b, div#c]，仅新增 div#c。
+const appended = build_comparison_reports([
+  { title: "A", url: "https://a.test/", html: "<html><body><div id=\"a\">甲</div><div id=\"b\">乙</div></body></html>" },
+  { title: "B", url: "https://b.test/", html: "<html><body><div id=\"a\">甲</div><div id=\"b\">乙</div><div id=\"c\">丙</div></body></html>" },
+]);
+if (appended[0] !== null) throw new Error("首条记录应为基准（报告为 null）");
+if (appended[1].baseline !== 0) throw new Error("第二条应以前一条为基准");
+if (appended[1].added.length !== 1 || appended[1].added[0].tag !== "div" || appended[1].added[0].id !== "c") throw new Error("末尾追加应识别为新增 div#c");
+if (appended[1].removed.length !== 0) throw new Error("末尾追加不应有移除");
+
+// 中间替换形态：[div#a, div#b] → [div#b, div#c]，应识别为 移除 div#a、新增 div#c。
+const swapped = build_comparison_reports([
+  { title: "A", url: "https://a.test/", html: "<html><body><div id=\"a\">甲</div><div id=\"b\">乙</div></body></html>" },
+  { title: "B", url: "https://b.test/", html: "<html><body><div id=\"b\">乙</div><div id=\"c\">丙</div></body></html>" },
+]);
+if (swapped[1].removed.length !== 1 || swapped[1].removed[0].id !== "a") throw new Error("应识别为移除 div#a");
+if (swapped[1].added.length !== 1 || swapped[1].added[0].id !== "c") throw new Error("应识别为新增 div#c");
+
+// 三条序列：[div#a, div#b] → [div#c, div#a, div#b] → [div#b]。
+// 第二条相对第一条：新增 div#c；第三条相对第二条：移除 div#c 和 div#a。
+const sequence = [
+  { title: "A", url: "https://a.test/", html: "<html><body><div id=\"a\">甲</div><div id=\"b\">乙</div></body></html>" },
+  { title: "B", url: "https://b.test/", html: "<html><body><div id=\"c\">丙</div><div id=\"a\">甲</div><div id=\"b\">乙</div></body></html>" },
+  { title: "C", url: "https://c.test/", html: "<html><body><div id=\"b\">乙</div></body></html>" },
+];
+const sequence_documents = build_comparison_documents(sequence);
+const sequence_reports = build_comparison_reports(sequence);
+if (sequence_reports[1].baseline !== 0 || sequence_reports[1].added.length !== 1 || sequence_reports[1].added[0].id !== "c") throw new Error("第二条应仅新增 div#c");
+if (sequence_reports[1].removed.length !== 0) throw new Error("第二条不应有移除");
+if (sequence_reports[2].baseline !== 1) throw new Error("第三条应以第二条为基准");
+if (sequence_reports[2].removed.length !== 2 || sequence_reports[2].removed[0].id !== "c" || sequence_reports[2].removed[1].id !== "a") throw new Error("第三条应按层级顺序移除 div#c、div#a");
+if (sequence_reports[2].added.length !== 0) throw new Error("第三条不应有新增");
+if (sequence_documents[0].includes('data-compare-added=""') || sequence_documents[0].includes('data-compare-deleted=""')) throw new Error("基准页不应有标注");
+if (!sequence_documents[1].includes('data-compare-added=""') || sequence_documents[1].includes('data-compare-deleted=""')) throw new Error("新增标注只应出现在第二条");
+if (!sequence_documents[2].includes('data-compare-deleted=""')) throw new Error("第三条应渲染删除节点");
+if (!sequence_documents[2].includes("丙") || !sequence_documents[2].includes("甲")) throw new Error("删除渲染应展示被删除的内容");
+if (!sequence_documents[2].includes('content:"删除"')) throw new Error("删除渲染应带「删除」角标样式");
+// 角标必须定位在元素盒外（bottom:100%），不得盖住被删内容本身，且字号足够小；
+// 幽灵节点预留 margin-top 间隙，连续删除时角标也不压到前一个被删内容。
+if (!sequence_documents[2].includes("bottom:100%")) throw new Error("删除角标应悬浮在被删元素上方而非盖住内容");
+if (!sequence_documents[2].includes("font-size:10px")) throw new Error("删除角标应使用更小的字号");
+if (!sequence_documents[2].includes("margin-top:18px")) throw new Error("被删节点应预留角标间隙");
+
+// 标注不得改动节点自身外观：着色只能由 absolute 遮罩覆盖、边框只用 outline。
+for (const marker of ["data-compare-added", "data-compare-changed", "data-compare-deleted"]) {
+  if (!sequence_documents[2].includes(`[${marker}]::before`)) throw new Error(`${marker} 应使用遮罩覆盖而非修改节点背景`);
+}
+if (sequence_documents[2].includes("line-through") || sequence_documents[2].includes("min-height")) throw new Error("标注样式不应改动节点自身属性");
+
+// 被删节点应克隆回当前页原位置（div#c、div#a 都在 div#b 之前），而非追加到父节点末尾。
+const ghost_document = new DOMParser().parseFromString(sequence_documents[2], "text/html");
+const body_ids = Array.from(ghost_document.body.children).map((element) => element.id);
+if (body_ids.join(",") !== "c,a,b") throw new Error(`删除节点应按原位置渲染，实际顺序：${body_ids.join(",")}`);
+if (!ghost_document.body.children[0].hasAttribute("data-compare-deleted") || !ghost_document.body.children[1].hasAttribute("data-compare-deleted")) throw new Error("被删节点应带删除标记");
+if (ghost_document.body.children[2].hasAttribute("data-compare-deleted")) throw new Error("未删除节点不应带删除标记");
+if (ghost_document.body.children[0].children.length > 0 && !ghost_document.body.children[0].textContent.includes("丙")) throw new Error("删除渲染应保留原节点内容");
+
+// 相邻两条完全一致 → 无任何标注、报告为空。
+const twin = [
+  { title: "A", url: "https://a.test/", html: "<html><body><main><p>相同</p></main></body></html>" },
+  { title: "B", url: "https://b.test/", html: "<html><body><main><p>相同</p></main></body></html>" },
+];
+const twin_documents = build_comparison_documents(twin);
+if (twin_documents[1].includes('data-compare-added=""') || twin_documents[1].includes('data-compare-changed=""') || twin_documents[1].includes('data-compare-deleted=""') || twin_documents[1].includes("<mark")) throw new Error("完全一致时不应有任何标注");
+const twin_reports = build_comparison_reports(twin);
+if (twin_reports[1].added.length || twin_reports[1].removed.length) throw new Error("完全一致时报告应为空");
+
+// 新增整个子树时只记录顶层节点一次。
+const subtree = build_comparison_reports([
+  { title: "A", url: "https://a.test/", html: "<html><body><main><p>文本</p></main></body></html>" },
+  { title: "B", url: "https://b.test/", html: "<html><body><main><p>文本</p><section id=\"new\"><span>甲</span><span>乙</span></section></main></body></html>" },
+]);
+if (subtree[1].added.length !== 1 || subtree[1].added[0].id !== "new") throw new Error("新增子树只应记录顶层节点一次");
+
+// 新增/移除按广度优先顺序记录：body 层的新增先于更深一层的新增。
+const layered = build_comparison_reports([
+  { title: "A", url: "https://a.test/", html: "<html><body><main><p>甲</p></main></body></html>" },
+  { title: "B", url: "https://b.test/", html: "<html><body><div id=\"top\">顶层</div><main><p>甲</p><span id=\"deep\">深层</span></main></body></html>" },
+]);
+if (layered[1].added.length !== 2 || layered[1].added[0].id !== "top" || layered[1].added[1].id !== "deep") throw new Error("新增清单应按层级顺序记录");
+
+if (describe_node({ tag: "div", id: "c", classes: [] }) !== "div#c") throw new Error("describe_node 应优先展示 id");
+if (describe_node({ tag: "p", id: "", classes: ["foo", "bar"] }) !== "p.foo") throw new Error("describe_node 无 id 时展示首个类名");
+if (describe_node({ tag: "section", id: "", classes: [] }) !== "section") throw new Error("describe_node 无 id/类名时展示标签");
+
+// ComparisonModel：只对比当前选中的分组（storage 键 comparison-group）。
+const model_client = {
+  storage: {
+    local: {
+      get: async () => ({
+        [comparison_records_key]: [
+          { group: "分组 1", title: "A", url: "https://a.test/", html: '<html><body><div id="a">甲</div></body></html>' },
+          { group: "分组 1", title: "B", url: "https://b.test/", html: '<html><body><div id="a">甲</div><div id="d">丁</div></body></html>' },
+          { group: "分组 2", title: "C", url: "https://c.test/", html: "<html><body><p>丙</p></body></html>" },
+          { group: "分组 2", title: "D", url: "https://d.test/", html: "<html><body><p>丁</p></body></html>" },
+        ],
+        [comparison_group_key]: "分组 2",
+      }),
+    },
+  },
+};
+const selected_model = ComparisonModel(model_client);
+await selected_model.ready();
+if (selected_model.group_name !== "分组 2") throw new Error("应读取选中分组名");
+const selected_group = selected_model.selected_group();
+if (!selected_group || selected_group.name !== "分组 2" || selected_group.records.length !== 2) throw new Error("应只选中「分组 2」");
+if (selected_group.documents.length !== 2 || selected_group.reports.length !== 2 || selected_group.reports[0] !== null) throw new Error("选中分组应产出逐对对比结果");
+const few_model = ComparisonModel({ storage: { local: { get: async () => ({ [comparison_records_key]: [{ group: "分组 1", title: "A", html: "<html><body><p>甲</p></body></html>" }], [comparison_group_key]: "分组 1" }) } } });
+await few_model.ready();
+if (few_model.selected_group() !== null) throw new Error("选中分组记录不足两条时应返回 null");
+
+// 预览：与对比一致的解析与安全处理，但不注入差异高亮。
+// 注意：内联脚本的字符串里 script 结束标签需写成 <\/ 转义，避免截断 HTML script 元素。
+const preview = build_preview_document({
+  title: "P", url: "https://p.test/a",
+  html: '<html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src none"><meta http-equiv="refresh" content="1"></head><body><p>预览内容</p><script>alert(1)<\/script></body></html>',
+});
+if (!preview.includes("<p>预览内容</p>")) throw new Error("预览应保留页面内容");
+if (preview.includes("<script")) throw new Error("预览应移除 script");
+if (preview.includes("Content-Security-Policy") || preview.includes('http-equiv="refresh"')) throw new Error("预览应移除 CSP/refresh meta");
+if (!preview.includes('<base href="https://p.test/a">')) throw new Error("预览应注入 base");
+if (preview.includes("[data-compare-")) throw new Error("预览不应注入对比高亮样式");
+
+document.body.textContent = "compare model checks passed";
+document.body.setAttribute("data-test-passed", "");
+</script></body></html>

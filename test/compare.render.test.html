@@ -1,0 +1,128 @@
+<!doctype html><html data-n="test-document"><head data-n="test-head"><meta charset="utf-8"><link rel="stylesheet" href="../assets/vendor/src/dmui.css"><link rel="stylesheet" href="../src/compare/compare.css"></head><body data-n="test-body">
+<div id="root" data-n="comparison-root-container"></div>
+<script data-n="test-stub">
+  // compare.js 顶层调用 ComparisonModel()（默认参数取全局 chrome），渲染前先桩掉 storage。
+  globalThis.chrome = {
+    storage: {
+      local: {
+        get: async () => ({
+          "comparison-records": [
+            { id: "1", group: "分组 1", title: "A", url: "https://a.test/", html: '<html><body><div id="a">甲</div><div id="b">乙</div></body></html>', created_at: 1 },
+            { id: "2", group: "分组 1", title: "B", url: "https://b.test/", html: '<html><body><div id="c">丙</div><div id="a">甲</div><div id="b">乙</div></body></html>', created_at: 2 },
+            { id: "3", group: "分组 1", title: "C", url: "https://c.test/", html: '<html><body><div id="a">甲</div><div id="b">乙二</div></body></html>', created_at: 3 },
+            { id: "4", group: "分组 2", title: "D", url: "https://d.test/", html: '<html><body><p>丁</p></body></html>', created_at: 4 },
+            { id: "5", group: "分组 2", title: "E", url: "https://e.test/", html: '<html><body><p>戊</p></body></html>', created_at: 5 },
+          ],
+          "comparison-group": "分组 1",
+        }),
+      },
+    },
+  };
+</script>
+<script type="module" data-n="test-script">
+window.addEventListener("error", (event) => document.body.setAttribute("data-test-error", event.message));
+window.addEventListener("unhandledrejection", (event) => document.body.setAttribute("data-test-error", String((event.reason && event.reason.message) || event.reason)));
+await import("../src/compare/compare.js");
+
+// 等 iframe 加载完成并完成高度自适应。
+await new Promise((resolve) => {
+  const started = Date.now();
+  const check = () => {
+    const frames = Array.from(document.querySelectorAll('[data-n="comparison-page-frame"]'));
+    if (frames.length === 3 && frames.every((frame) => frame.style.height)) resolve();
+    else if (Date.now() - started > 5000) resolve();
+    else setTimeout(check, 100);
+  };
+  check();
+});
+
+// 只渲染当前选中分组（分组 1），分组 2 不出现。
+const sections = Array.from(document.querySelectorAll('[data-n="comparison-group"]'));
+if (sections.length !== 1) throw new Error(`应只渲染选中分组，实际 ${sections.length} 个`);
+if (document.querySelector('[data-n="comparison-group-heading"]').textContent !== "分组 1（3 条）") throw new Error("分组标题错误");
+if (document.querySelector('[data-n="comparison-root"]').textContent.includes("4. D")) throw new Error("未选中的分组不应渲染");
+
+const panels = Array.from(document.querySelectorAll('[data-n="comparison-panel"]'));
+if (panels.length !== 3) throw new Error("应渲染 3 个面板");
+const reports = panels.map((panel) => panel.querySelector('[data-n="comparison-panel-report"]'));
+if (reports.length !== 3 || !reports[0] || !reports[1] || !reports[2]) throw new Error("每个面板应有简报");
+if (!reports[0].classList.contains("is-baseline") || reports[0].textContent !== "基准记录（无前一条）") throw new Error("首条面板应为基准记录");
+const summary = (index) => reports[index].querySelector('[data-n="comparison-panel-report-summary"]').firstChild.textContent;
+const items = (index) => Array.from(reports[index].querySelectorAll(".comparison-panel-report-item")).map((item) => item.textContent);
+if (summary(1) !== "较第 1 条：新增 1 · 移除 0" || items(1).join("|") !== "+ div#c（丙）") throw new Error(`第二条简报错误：${reports[1].textContent}`);
+if (summary(2) !== "较第 2 条：新增 0 · 移除 1" || items(2).join("|") !== "− div#c（丙）") throw new Error(`第三条简报错误：${reports[2].textContent}`);
+if (reports[2].querySelector(".is-removed").title !== "body > div#c") throw new Error("清单项悬停应显示节点路径");
+
+// 简报导航：非基准面板各有一组 ↑/↓，点击在变更间循环跳转并显示序号。
+const navs = Array.from(document.querySelectorAll('[data-n="comparison-report-nav"]'));
+if (navs.length !== 2) throw new Error(`非基准面板应有 2 组导航，实际 ${navs.length}`);
+const counters = () => Array.from(document.querySelectorAll('[data-n="comparison-report-counter"]')).map((el) => el.textContent);
+navs[0].querySelector('[data-n="comparison-report-next"]').click();
+navs[1].querySelector('[data-n="comparison-report-next"]').click();
+navs[1].querySelector('[data-n="comparison-report-next"]').click();
+await new Promise((resolve) => setTimeout(resolve, 100));
+if (counters().join("|") !== "1/1|2/2") throw new Error(`导航计数错误：${counters().join("|")}`);
+navs[1].querySelector('[data-n="comparison-report-prev"]').click();
+await new Promise((resolve) => setTimeout(resolve, 100));
+if (counters()[1] !== "1/2") throw new Error(`上箭头应循环回退：${counters()[1]}`);
+
+const frames = panels.map((panel) => panel.querySelector("iframe"));
+if (frames[0].srcdoc.includes('data-compare-added=""') || frames[0].srcdoc.includes('data-compare-deleted=""')) throw new Error("基准页 iframe 不应有标注");
+if (!frames[1].srcdoc.includes('data-compare-added=""')) throw new Error("第二条 iframe 应有新增标注");
+if (!frames[2].srcdoc.includes('data-compare-deleted=""')) throw new Error("第三条 iframe 应渲染删除节点");
+const deleted_document = new DOMParser().parseFromString(frames[2].srcdoc, "text/html");
+const deleted_ids = Array.from(deleted_document.body.children).map((element) => element.id).join(",");
+if (deleted_ids !== "c,a,b") throw new Error(`第三条 iframe 中被删节点应原位渲染（c、a 在 b 之前），实际：${deleted_ids}`);
+if (!frames[2].srcdoc.includes('content:"删除"')) throw new Error("删除渲染应带「删除」角标样式");
+if (!frames[2].srcdoc.includes("<mark data-compare-text-diff")) throw new Error("第三条 iframe 应高亮文本差异（乙 → 乙二）");
+
+// 宽度 100%、高度随内容自适应：不再缩放，iframe 高度等于内容高度。
+for (const frame of frames) {
+  if (!frame.style.height || !frame.style.height.endsWith("px")) throw new Error("iframe 高度应随内容自适应");
+  const doc = frame.contentDocument;
+  if (!doc) throw new Error("iframe 文档应可访问（allow-same-origin）");
+  if (doc.documentElement.style.zoom) throw new Error("不应再对页面整体缩放");
+  if (frame.clientWidth !== doc.documentElement.scrollWidth && doc.documentElement.scrollWidth > frame.clientWidth + 1) throw new Error("内容应按面板宽度渲染");
+}
+
+// —— 点击差异遮罩 → dmui Dialog 展示变更说明。 ——
+const click_in_frame = (frame, selector) => {
+  const doc = frame.contentDocument;
+  const target = doc.querySelector(selector);
+  if (!target) throw new Error(`iframe 内应存在 ${selector}`);
+  target.dispatchEvent(new doc.defaultView.MouseEvent("click", { bubbles: true, cancelable: true }));
+};
+const detail_value = (name) => {
+  const element = document.querySelector(`[data-n="comparison-detail-${name}-value"]`);
+  if (!element) throw new Error(`弹窗应包含明细行「${name}」`);
+  return element.textContent;
+};
+const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+if (document.querySelector(".dm-dialog-content")) throw new Error("未点击遮罩前不应有弹窗");
+click_in_frame(frames[2], "[data-compare-text-diff]");
+await wait(150);
+if (!document.querySelector(".dm-dialog-content")) throw new Error("点击文本差异遮罩应弹出变更说明");
+if (document.querySelector(".dm-dialog-title").textContent !== "文本差异说明") throw new Error(`弹窗标题错误：${document.querySelector(".dm-dialog-title").textContent}`);
+if (document.querySelector('[data-n="comparison-detail-baseline"]').textContent !== "基准记录：3. C") throw new Error("弹窗应标明基准记录");
+if (detail_value("kind") !== "文本差异" || detail_value("from") !== "乙" || detail_value("to") !== "乙二") throw new Error(`文本差异明细错误：${detail_value("kind")} / ${detail_value("from")} / ${detail_value("to")}`);
+
+// 关闭后点击删除遮罩：同一弹窗复用，内容响应式切换。
+document.querySelector(".dm-dialog-close").click();
+await wait(400);
+if (document.querySelector(".dm-dialog-content")) throw new Error("点击关闭后弹窗应消失");
+click_in_frame(frames[2], "[data-compare-deleted]");
+await wait(150);
+if (document.querySelector(".dm-dialog-title").textContent !== "删除内容说明") throw new Error(`关闭后再次点击应切换为删除说明：${document.querySelector(".dm-dialog-title").textContent}`);
+if (detail_value("node") !== "div#c" || detail_value("path") !== "body > div#c") throw new Error(`删除明细错误：${detail_value("node")} / ${detail_value("path")}`);
+
+// 新增遮罩点击：节点与内容片段。
+document.querySelector(".dm-dialog-close").click();
+await wait(400);
+click_in_frame(frames[1], "[data-compare-added]");
+await wait(150);
+if (document.querySelector(".dm-dialog-title").textContent !== "新增内容说明") throw new Error("点击新增遮罩应弹出新增说明");
+if (detail_value("node") !== "div#c" || detail_value("text") !== "丙") throw new Error(`新增明细错误：${detail_value("node")} / ${detail_value("text")}`);
+
+document.body.setAttribute("data-test-passed", "");
+</script></body></html>

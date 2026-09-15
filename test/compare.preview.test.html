@@ -1,0 +1,44 @@
+<!doctype html><html data-n="test-document"><head data-n="test-head"><meta charset="utf-8"><link rel="stylesheet" href="../src/compare/preview.css"></head><body data-n="test-body">
+<main class="preview-root" data-n="preview-root" aria-label="暂存页面预览"></main>
+<script data-n="test-stub">
+  // preview.js 顶层调用 ComparisonModel()（默认参数取全局 chrome），渲染前先桩掉 storage。
+  globalThis.chrome = {
+    storage: {
+      local: {
+        get: async () => ({
+          "comparison-records": [
+            { id: "1", group: "分组 1", title: "A", url: "https://a.test/", html: '<html><head><meta http-equiv="Content-Security-Policy" content="default-src none"></head><body><main><p>预览内容</p></main></body></html>', created_at: 1 },
+            { id: "2", group: "分组 1", title: "B", url: "https://b.test/", html: "<html><body><p>乙</p></body></html>", created_at: 2 },
+          ],
+          "comparison-group": "分组 1",
+        }),
+      },
+    },
+  };
+  // preview.js 从 location.search 读 id；直接打开时补上 ?id=1。
+  if (!location.search.includes("id=")) { try { history.replaceState(null, "", "?id=1"); } catch (error) { /* file:// 下忽略 */ } }
+</script>
+<script type="module" data-n="test-script">
+window.addEventListener("error", (event) => document.body.setAttribute("data-test-error", event.message));
+window.addEventListener("unhandledrejection", (event) => document.body.setAttribute("data-test-error", String((event.reason && event.reason.message) || event.reason)));
+await import("../src/compare/preview.js");
+await new Promise((resolve) => {
+  const started = Date.now();
+  const check = () => {
+    if (document.querySelector('[data-n="preview-frame"]') || Date.now() - started > 5000) resolve();
+    else setTimeout(check, 100);
+  };
+  check();
+});
+const title = document.querySelector('[data-n="preview-record-title"]');
+const url = document.querySelector('[data-n="preview-record-url"]');
+const frame = document.querySelector('[data-n="preview-frame"]');
+if (!title || title.textContent !== "A") throw new Error("应显示记录标题");
+if (!url || url.textContent !== "https://a.test/") throw new Error("应显示记录地址");
+if (!frame) throw new Error("应渲染预览 iframe");
+if (!frame.srcdoc.includes("<p>预览内容</p>")) throw new Error("iframe 应渲染记录内容");
+if (frame.srcdoc.includes("Content-Security-Policy")) throw new Error("预览应移除 CSP meta");
+if (!frame.srcdoc.includes('<base href="https://a.test/">')) throw new Error("预览应注入 base");
+if (frame.srcdoc.includes("[data-compare-")) throw new Error("预览不应注入对比样式");
+document.body.setAttribute("data-test-passed", "");
+</script></body></html>
