@@ -68,8 +68,35 @@ body { color: var(--dm-color-text-primary); background: var(--dm-color-bg-canvas
 .savepage-groups { display: flex; align-items: center; gap: 8px; flex: none; }
 .savepage-groups .section-title { flex: none; }
 .comparison-groups { flex: 1; min-width: 0; overflow-x: auto; background: var(--dm-color-bg-surface); border-color: var(--dm-color-border); }
+.comparison-group-tab-wrap { display: flex; align-items: center; gap: 2px; flex: none; border-radius: var(--dm-radius-control); }
+.comparison-group-tab-wrap.is-active { color: var(--dm-color-primary); background: var(--dm-color-primary-soft); }
+.comparison-group-tab-wrap.is-active .comparison-group-tab:hover:not(:disabled) { background: transparent; }
 .comparison-group-tab { flex: none; }
-.comparison-group-tab.is-active { color: var(--dm-color-primary); background: var(--dm-color-primary-soft); }
+.comparison-group-tab.is-active { color: var(--dm-color-primary); background: transparent; }
+.comparison-group-remove { flex: none; padding-inline: 4px; }
+.detect-page { padding: 18px 20px 12px; gap: 12px; }
+.detect-toolbar { display: flex; align-items: center; gap: 10px; flex: none; }
+.detect-toolbar .detect-count { margin-left: auto; font-variant-numeric: tabular-nums; }
+.detect-feedback { flex: none; color: var(--dm-color-text-secondary); font-size: 11px; }
+.detection-rules { display: flex; flex-direction: column; gap: 6px; flex: 1; min-height: 0; overflow: auto; padding: 10px; border: 1px solid var(--dm-color-border); border-radius: 8px; background: var(--dm-color-bg-surface); }
+.detection-rule-row { display: flex; align-items: flex-start; gap: 6px; flex: none; padding: 8px; border: 1px solid var(--dm-color-border); border-radius: 6px; background: var(--dm-color-bg-canvas); }
+.detection-rule-main { display: flex; flex-direction: column; gap: 3px; flex: 1; min-width: 0; }
+.detection-rule-name { font-weight: 600; overflow-wrap: anywhere; }
+.detection-rule-condition, .detection-rule-source, .detection-rule-result { font-size: 11px; overflow-wrap: anywhere; }
+.detection-rule-condition { font-family: var(--dm-font-family-mono); }
+.detection-rule-shape { align-self: flex-start; padding: 0 6px; border: 1px solid var(--dm-color-border); border-radius: 9px; }
+.detection-rule-result.is-pass { color: var(--dm-color-success); }
+.detection-rule-result.is-fail { color: var(--dm-color-danger); }
+.detection-rule-result.is-error { color: var(--dm-color-danger); }
+.detection-rule-result.is-baseline { color: var(--dm-color-text-secondary); }
+/* 列表对比的 diff 三行：小字号、键名等宽；新增 / 更新 / 删除各一色。 */
+.detection-rule-diff { font-family: var(--dm-font-family-mono); font-size: 11px; overflow-wrap: anywhere; }
+.detection-rule-diff.is-added { color: var(--dm-color-success); }
+.detection-rule-diff.is-updated { color: var(--dm-color-warning); }
+.detection-rule-diff.is-removed { color: var(--dm-color-danger); }
+.detect-notice { flex: none; padding: 8px 10px; border: 1px solid var(--dm-color-border); border-radius: 6px; background: var(--dm-color-bg-surface); color: var(--dm-color-text-secondary); font-size: 11px; line-height: 1.5; }
+.detection-rule-actions { display: flex; align-items: center; gap: 6px; flex: none; }
+.detection-rules-empty { padding: 18px; text-align: center; }
 .settings-page { flex-direction: row; }
 .settings-sidebar { flex: none; width: 108px; padding: 12px 8px; border-right: 1px solid var(--dm-color-border); background: var(--dm-color-bg-surface); }
 .settings-menu-button { width: 100%; }

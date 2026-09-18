@@ -1,0 +1,141 @@
+<!doctype html><html data-n="test-document"><head data-n="test-head"><meta charset="utf-8">
+<style data-n="test-style">
+  #items li { display: flex; gap: 8px; }
+</style>
+</head><body data-n="test-body">
+<ul id="items" data-n="items">
+  <li><span>苹果</span><span>¥3</span></li>
+  <li><span>香蕉</span><span>¥5</span></li>
+</ul>
+<script type="module" data-n="test-script">
+window.addEventListener("error", (event) => document.body.setAttribute("data-test-error", event.message));
+window.addEventListener("unhandledrejection", (event) => document.body.setAttribute("data-test-error", String((event.reason && event.reason.message) || event.reason)));
+import { build_list_code, read_baseline } from "../src/compare/detection.model.js";
+
+const items = document.querySelector("#items");
+// 取键函数：键 = 商品名，字段 = 价格。与 preview.js 的模板同形（键由函数决定，不固定字段）。
+const KEY_FN = [
+  "var result = {};",
+  "for (var i = 0; i < self.items.length; i += 1) {",
+  "  var cells = self.items[i].items;",
+  "  result[cells[0].text] = { price: cells[1].text };",
+  "}",
+  "return result;",
+].join("\n");
+
+// 在测试页自身造 DOM（无 chrome）：跑 build_list_code 生成的字符串即真实注入代码。
+const run = (rule) => new Function("return " + build_list_code(rule))();
+const set_items = (pairs) => {
+  items.textContent = "";
+  for (const [name, price] of pairs) {
+    const li = document.createElement("li");
+    const first = document.createElement("span");
+    first.textContent = name;
+    const second = document.createElement("span");
+    second.textContent = price;
+    li.append(first, second);
+    items.append(li);
+  }
+};
+
+// —— 基线未记录：回传本次取键结果（快照），下次检测开始比对 ——
+const first = run({ selector: "#items", code: KEY_FN, baseline: null });
+if (first.baseline !== true || first.kind !== "list") throw new Error(`空基线应回传 snapshot：${JSON.stringify(first)}`);
+if (Object.keys(first.snapshot).join(",") !== "苹果,香蕉") throw new Error(`快照应含全部键：${JSON.stringify(first.snapshot)}`);
+if (first.snapshot["苹果"].price !== "¥3") throw new Error(`快照应含字段值：${JSON.stringify(first.snapshot)}`);
+if (first.baseline_count !== 2 || first.current_count !== 2) throw new Error(`应带基线 / 当前项数：${JSON.stringify(first)}`);
+if (!first.message.includes("已记录基线 2 项")) throw new Error(`基线文案错误：${first.message}`);
+if (first.actual !== "基线 2 项") throw new Error(`基线实际值错误：${first.actual}`);
+
+const baseline = first.snapshot;
+
+// —— 基线与当前一致：无变更 ——
+const same = run({ selector: "#items", code: KEY_FN, baseline });
+if (same.found !== true || same.passed !== false) throw new Error(`一致时应无变更：${JSON.stringify(same)}`);
+if (same.message !== "无变更") throw new Error(`message 应为无变更：${same.message}`);
+if (same.counts.added + same.counts.updated + same.counts.removed !== 0) throw new Error(`一致时计数应为 0：${JSON.stringify(same.counts)}`);
+if (same.diff.added.length || same.diff.updated.length || same.diff.removed.length) throw new Error("一致时三行 diff 应为空");
+if (same.baseline_count !== 2 || same.current_count !== 2) throw new Error(`一致时应带两侧项数：${JSON.stringify(same)}`);
+
+// —— 仅调序：顺序变化不算变更 ——
+set_items([["香蕉", "¥5"], ["苹果", "¥3"]]);
+const reordered = run({ selector: "#items", code: KEY_FN, baseline });
+if (reordered.passed || reordered.message !== "无变更") throw new Error(`仅调序不应算变更：${JSON.stringify(reordered)}`);
+
+// —— 增 / 删 / 改各命中一类 ——
+set_items([["橙子", "¥7"], ["苹果", "¥4"]]);
+const mixed = run({ selector: "#items", code: KEY_FN, baseline });
+if (!mixed.passed || mixed.message !== "有变更") throw new Error(`有增删改时应满足：${JSON.stringify(mixed)}`);
+if (mixed.diff.added.join(",") !== "橙子") throw new Error(`应报新增橙子：${JSON.stringify(mixed.diff.added)}`);
+if (mixed.diff.removed.join(",") !== "香蕉") throw new Error(`应报删除香蕉：${JSON.stringify(mixed.diff.removed)}`);
+if (mixed.diff.updated.length !== 1 || mixed.diff.updated[0].key !== "苹果") throw new Error(`应报更新苹果：${JSON.stringify(mixed.diff.updated)}`);
+if (mixed.diff.updated[0].fields.join(",") !== "price") throw new Error(`更新应带出变化字段名：${JSON.stringify(mixed.diff.updated[0].fields)}`);
+if (mixed.counts.added !== 1 || mixed.counts.updated !== 1 || mixed.counts.removed !== 1) throw new Error(`计数错误：${JSON.stringify(mixed.counts)}`);
+if (mixed.actual !== "新增 1 · 更新 1 · 删除 1（基线 2 项 → 当前 2 项）") throw new Error(`实际值错误：${mixed.actual}`);
+
+// —— 更新字段取两侧并集：当前侧少一个字段也要算更新 ——
+const with_stock = { "苹果": { price: "¥3", stock: "有" }, "香蕉": { price: "¥5" } };
+set_items([["苹果", "¥4"], ["香蕉", "¥5"]]);
+const union = run({ selector: "#items", code: KEY_FN, baseline: with_stock });
+if (union.counts.updated !== 1) throw new Error(`并集比较应报 1 项更新：${JSON.stringify(union.counts)}`);
+if (union.diff.updated[0].fields.join(",") !== "price,stock") throw new Error(`字段并集应含两侧差异：${JSON.stringify(union.diff.updated[0].fields)}`);
+
+// —— 函数写错：抛错 / 没返回值 / 返回值不是对象 / 项的值不是对象 ——
+const broken = (code) => run({ selector: "#items", code, baseline });
+const threw = broken('throw new Error("boom");');
+if (!threw.error || !threw.message.includes("函数执行出错")) throw new Error(`抛错应报执行失败：${JSON.stringify(threw)}`);
+const no_return = broken("var result = {};");
+if (!no_return.error || !no_return.message.includes("没有返回值")) throw new Error(`没返回值应报错：${JSON.stringify(no_return)}`);
+const array = broken("return [];");
+if (!array.error || !array.message.includes("对象")) throw new Error(`返回值不是对象应报错：${JSON.stringify(array)}`);
+const bad_item = broken('var result = {}; result["甲"] = 1; return result;');
+if (!bad_item.error || !bad_item.message.includes("不是对象")) throw new Error(`项的值不是对象应报错：${JSON.stringify(bad_item)}`);
+
+// —— 选择器不存在 ——
+const missing = run({ selector: "#not-there", code: KEY_FN, baseline });
+if (missing.found || missing.message.indexOf("未找到") === -1) throw new Error(`选择器不存在应报未找到：${JSON.stringify(missing)}`);
+
+// —— 语法错误：生成的代码在构造函数时抛 SyntaxError ——
+let syntax = false;
+try { new Function("return " + build_list_code({ selector: "#items", code: "return {;", baseline: null })); } catch (error) { syntax = error instanceof SyntaxError; }
+if (!syntax) throw new Error("用户函数体语法错误应让 new Function 抛 SyntaxError");
+
+// —— 生成的代码：内联取内容函数、只嵌基线与用户代码、不嵌页面 HTML ——
+const generated = build_list_code({ selector: "#items", code: KEY_FN, baseline: { "苹果": { price: "¥3" } } });
+if (!generated.includes("function inspect_content")) throw new Error("应内联自包含的取内容函数");
+if (!generated.includes("function read_content")) throw new Error("应内联 read_content");
+if (!generated.includes(KEY_FN)) throw new Error("应原样嵌入用户函数体");
+if (!generated.includes('{"苹果":{"price":"¥3"}}')) throw new Error("应嵌入基线 JSON");
+if (!generated.includes('var self = read_content("#items")')) throw new Error("应嵌入自身选择器");
+if (generated.includes("<ul") || generated.includes("<li") || generated.includes("苹果</span>")) throw new Error("不应嵌入页面 HTML");
+
+// —— 超 20 条截断但 counts 准确 ——
+const many = document.createElement("ul");
+many.id = "many";
+for (let index = 0; index < 25; index += 1) {
+  const li = document.createElement("li");
+  const first_cell = document.createElement("span");
+  first_cell.textContent = `n${index}`;
+  const second_cell = document.createElement("span");
+  second_cell.textContent = `¥${index}`;
+  li.append(first_cell, second_cell);
+  many.append(li);
+}
+document.body.append(many);
+const old_baseline = {};
+for (let index = 0; index < 25; index += 1) old_baseline[`old-${index}`] = { price: `¥${index}` };
+const capped = run({ selector: "#many", code: KEY_FN, baseline: old_baseline });
+if (capped.counts.added !== 25 || capped.counts.removed !== 25) throw new Error(`计数应为准确值：${JSON.stringify(capped.counts)}`);
+if (capped.diff.added.length !== 20 || capped.diff.removed.length !== 20) throw new Error(`diff 数组应截断到 20 条：${capped.diff.added.length}/${capped.diff.removed.length}`);
+if (!capped.passed) throw new Error("有增删时应满足");
+
+// —— read_baseline：拒绝分支（与注入代码同源的校验）——
+if (read_baseline({ "甲": { a: 1 } }).baseline === null) throw new Error("合法基线应被接受");
+if (read_baseline([{ a: 1 }]).baseline !== null || !read_baseline([{ a: 1 }]).error) throw new Error("数组应被拒绝");
+if (read_baseline({ "甲": { a: { b: 1 } } }).baseline !== null) throw new Error("字段值嵌套对象应被拒绝");
+const huge = {};
+for (let index = 0; index < 501; index += 1) huge[`k${index}`] = {};
+if (read_baseline(huge).baseline !== null || !read_baseline(huge).error) throw new Error("键数超限应被拒绝");
+
+document.body.setAttribute("data-test-passed", "");
+</script></body></html>

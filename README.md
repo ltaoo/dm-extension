@@ -1,6 +1,6 @@
 # Download & Manage 浏览器扩展
 
-Chrome（120+）Manifest V3 扩展，提供三块能力：
+Chrome（138+）Manifest V3 扩展，提供三块能力：
 
 - **Cookie**：在弹窗中查看当前站点 Cookie（含 HttpOnly），勾选后复制为 `name=value; ...`。
 - **对比**：暂存当前标签页移除 `script` 后的 HTML（可复制到粘贴板），并在新标签页对**当前选中分组**按「每条记录与其前一条对比」横向渲染、高亮差异并列出新增/移除清单。
@@ -23,11 +23,58 @@ Chrome（120+）Manifest V3 扩展，提供三块能力：
 
 ### 对比
 
-打开弹窗时读取当前标签页 `document.documentElement` 的 HTML（克隆后移除全部 `script` 标签）。点击「暂存」可把当前页面保存到当前选中分组；点击「复制」可把当前页面 HTML 复制到粘贴板（反馈字符数，成功后按钮显示「已复制」3 秒）；通过「分组」标签可切换分组或「新增分组」。弹窗中的暂存列表**只显示当前分组内的记录**：点击记录在新标签页打开渲染预览（`src/compare/preview.html`），每条记录可单独「删除」（有确认），「清空」仅清空当前分组、不影响其它分组。在当前选中分组内暂存至少两条记录后点击「开始对比」，会在新标签页只渲染该分组：各记录横向并排，内容按面板宽度 100% 渲染、iframe 高度随内容自适应，页面纵向滚动查看。对比永远以前一条记录为基准：第 1 条是基准页，之后每条在页面内高亮相对前一条的差异——新增元素绿框、被移除的节点克隆回当前页**原位置**并用红色半透明遮罩盖住、附「删除」角标（直接看出页面哪里被删了）、属性或结构差异描边整个元素、纯文本差异精确高亮到具体文字；面板标题下方同时给出「新增 N · 移除 N」简报与节点清单（悬停查看路径），简报行的 ↑/↓ 可在本面板全部变更间循环跳转、自动滚动到视口居中；新增/移除按广度优先顺序记录且只记最顶层节点。记录保存在 `chrome.storage.local`。
+打开弹窗时读取当前标签页 `document.documentElement` 的 HTML（克隆后移除全部 `script` 标签；`canvas` 位图不在 DOM 里、克隆后必然空白，因此按渲染尺寸转成 base64 PNG 图片替换进克隆树，被跨域内容污染无法导出时保留原节点）。点击「暂存」可把当前页面保存到当前选中分组；点击「复制」可把当前页面 HTML 复制到粘贴板（反馈字符数，成功后按钮显示「已复制」3 秒）；通过「分组」标签可切换分组或「新增分组」；分组名单独持久化在 `comparison-groups`，**组内记录清空后分组仍然保留**，只有点分组标签上的「×」（有确认）才删除该分组及其全部记录，且至少保留一个分组（仅剩一个时「×」置灰）。弹窗中的暂存列表**只显示当前分组内的记录**：点击记录在新标签页打开渲染预览（`src/compare/preview.html`），每条记录可单独「删除」（有确认），「清空」仅清空当前分组、不影响其它分组。在当前选中分组内暂存至少两条记录后点击「开始对比」，会在新标签页只渲染该分组：各记录横向并排，内容按面板宽度 100% 渲染、iframe 高度随内容自适应，页面纵向滚动查看。对比永远以前一条记录为基准：第 1 条是基准页，之后每条在页面内高亮相对前一条的差异——新增元素绿框、被移除的节点克隆回当前页**原位置**并用红色半透明遮罩盖住、附「删除」角标（直接看出页面哪里被删了）、属性或结构差异描边整个元素、纯文本差异精确高亮到具体文字；面板标题下方同时给出「新增 N · 移除 N」简报与节点清单（悬停查看路径），简报行的 ↑/↓ 可在本面板全部变更间循环跳转、自动滚动到视口居中；新增/移除按广度优先顺序记录且只记最顶层节点。记录保存在 `chrome.storage.local`。
 
 飞书文档（`*.feishu.cn` / `*.feishu-doc.cn` / `*.larksuite.com` / `*.larkoffice.com`）会额外提取资源：图片取 `img[src]` 与 `data-src` 懒加载图；视频取 `video[src]`、`source[src]` 及视频扩展名的 `data-src`；文件取带 `download`、常见附件扩展名或飞书资源地址的链接。界面元素（头像、表情、工具栏等）按类名关键字排除。识别结果按文档顺序编号，同名资源复用首次编号，页面对应节点替换为 `{{IMAGE:1}}` / `{{VIDEO:1}}` / `{{FILE:1}}` 占位符。
 
 自建域名部署的飞书不落在 `*.feishu.cn` 上。设置页「SavePage 解析」提供域名 → 解析器映射：每行一个域名 + 解析器（飞书文档 / 通用），`example.com` 匹配自身及所有子域，也接受 `*.example.com` 或完整 URL。默认内置 `larkenterprise.com → 飞书文档`；上述飞书官方域名始终按飞书文档解析。未匹配的域名走「通用」。规则保存在 `chrome.storage.local` 的 `page-parsers` 键下，切换规则后点「重新获取」重新解析。
+
+### 变更检测
+
+在暂存记录的预览页点「框选」进入框选模式，拖拽框出关心的内容块，即可把它登记成一条**变更检测规则**；之后在弹窗「变更检测」页点「检测」，就能直接问「当前页面还满足这条规则吗」。框选遮罩画在预览页自己身上（暂存文档本身不被改动），识别到的容器取**完全包含选区的最深节点**，落库的选择器优先用唯一的 `#id`、否则逐层 `tag:nth-of-type(k)` 直到 `body`（不用 class，因为暂存页面里的 class 常是哈希/自动生成的，跨快照不稳定）。框选出的容器旁会出现**操作栏**（显示当前容器 + 「子容器」/「父容器」），沿祖先链在识别到的节点与 `body` 之间来回切换，容器轮廓、形态徽标与预填的规则名 / 期望值随切换实时更新——框到列表项时点两次「父容器」即可改选整个列表。框与轮廓都收到识别到的容器上（不是鼠标拉出的那个矩形）。
+
+遮罩画在预览页之外的独立图层上（暂存文档本身不被改动），并且始终跟着内容走：预览文档滚动时，框 / 轮廓 / 操作栏 / 编号框都按元素当下的位置重绘；该图层被外层裁剪，容器比视口高也不会撑大外层页面的滚动区域，所以框选过程中不会因为突然出现滚动条而让预览内容抖动。保存成功后待保存的选框收成一个带编号的框。
+
+同一次预览可以**连续框选**多个块，**逐框保存**（保存一个框后可继续框下一个）；每个框都画回预览页上并标号（第 1、2、3…），编号 = 本次预览里规则按创建时间的次序。退出框选会清空画面上的编号与草稿，存量规则仍在同一组里，下次进入框选按编号重绘。
+
+四种条件：
+
+- **颜色为**：同时比较目标节点的文字颜色与背景色，**任一命中即满足**；期望值支持 `#hex`、具名色与 `rgb(...)`，比较前两侧都归一化成数值（透明度的极小差异不敏感）。读的是计算样式，只在本地执行。
+- **内容匹配**：对节点文本按**大小写敏感的「包含」**匹配。
+- **JS 函数**：自己写一段函数体，参数是 `self`（本次框选的内容）与 `others`（`{ 编号: 同一组里其他框的内容 }`，取不到的框为 `null`），返回 `true` / `false`（用 `Boolean()` 归一，返回 `undefined` 视为写错、单独报错）。例如列表第 3 项的价格是不是高于第 1 项：`return others[1].text !== self.text;`。需要 Chrome 138+，并在 `chrome://extensions` 的扩展详情页打开「允许用户脚本」；未开启时该类型的规则在列表里置灰并给出原因，页级也有提示，颜色 / 内容规则不受影响。
+- **列表对比**：自己写一段**取键函数体**（参数只有 `self`），把框选到的列表变成一组带键的项，返回 `{ 键: { 字段: 值 } }` —— **键与字段名都由函数决定**（不固定为某个字段或属性），字段值只能是字符串 / 数字 / 布尔 / `null`。与 JS 函数规则共用同一个函数体输入框，模板形如 `result[self.items[i].text] = { text: self.items[i].text }`。基线（上次的取键结果）**内嵌在规则里**，在**该站点第一次点「检测」时记录**（见下），之后每次检测与基线按键比对，报告**新增 / 删除 / 更新**：更新会列出发生变化的字段名，**顺序变化不算变更**（这正是按键而非按位置的意义），**有任意变更即满足**。同样需要 Chrome 138+ 与「允许用户脚本」。
+
+`self` 与 `others[编号]` 的形态（**全是字符串与普通对象/数组，零 DOM 引用**）：
+
+```js
+// 详情（子节点结构不同）
+{ shape: "detail", item_count: 0, html: "<div>…</div>", text: "折叠空白后的文本", items: [] }
+// 列表（多个子节点结构相同）
+{ shape: "list", item_count: 3, html: "<ul>…</ul>", text: "…",
+  items: [ { shape: "detail", item_count: 0, html: "<li>…</li>", text: "…", items: [] }, … ] }
+```
+
+**列表 / 详情判定**：只看标签树、`textContent` 与 `outerHTML` —— 逐个子节点算「结构指纹」（子树的标签名形状，如 `UL(LI(A,B),LI(A,B))`）后分组，最大的同指纹分组 **≥ 2 个且占比 ≥ 一半** 判为列表（`items` 即该组成员，各自递归），否则判为详情（`items` 为空）。判定在编写规则时（预览面板里的形态徽标）与检测时（注入壳里现场重判）都调用，所以 `shape` 落库只为展示，函数实际拿到的是**当前页面真实的结构**。
+
+**用户函数里请只用 `html` / `text` / `items`，不要用 `querySelector` / `getComputedStyle` / 布局属性**：后端只拿得到 HTML，没有多少 DOM API，宿主侧（扩展里的注入壳、将来的后端）只允许用 3 个处处都有的原语——按选择器取节点、取 `outerHTML`、取文本，它们在服务端解析器（如 Cheerio 的 `$(sel).first()` / `$.html(el)` / `el.text()`）上都一一对应，将来只换这层壳、函数体原样搬。颜色类判断请继续用「颜色为」类型。
+
+规则按其来源限定：从记录地址取 `hostname` 存进规则，只有当前标签页 hostname 与其相同的规则可检测，其余在列表里置灰并给出原因。检测结果分「满足 / 不满足 / 未找到目标节点 / 执行失败 / 已记录基线」五种，并附实际值（颜色列出文字与背景、内容列出折叠空白后的文本片段、JS 函数给出结构摘要如 `列表 · 3 项 · 各 42 字`、列表对比给出 `新增 a · 更新 b · 删除 c（基线 N 项 → 当前 M 项）` 并在下方列出三行 diff 清单），只影响本页展示，不写入暂存记录。规则只存 `hostname` / `selector` / 条件（用户脚本规则另存函数体，列表对比再另存基线），**不存 HTML**，因此删除暂存记录或清空分组都不会级联删掉规则；规则保存在 `chrome.storage.local` 的 `detection-rules` 键下，是纯 JSON、自包含、字段稳定的对象。
+
+**列表对比的基线为什么在「首次检测」时记录**：MV3 扩展页面（预览页 / 弹窗 / 后台 SW）的 CSP 由 Chrome 锁定，**不允许 `eval` / `new Function`**，所以框选保存那一刻预览页跑不了用户写的取键函数。能跑任意用户代码的只有两处：`chrome.userScripts` 的 USER_SCRIPT 世界（只作用于扩展有 host 权限的 http(s) 页面，即实时页面），以及 `manifest.json` 的 `sandbox.pages` 沙箱页（能跑，但只能在传给它的 HTML **字符串**上跑，碰不到实时页面 —— 预览页的「提取测试」用的就是它）。取键函数要对着实时页面取值，因此仍只能由 `chrome.userScripts` 执行。于是规则保存时只存 JS 与空基线（`baseline: null`），在该站点第一次点「检测」时把取键结果写进规则的 `baseline`，之后每次检测与基线比对。基线仍然是内嵌在规则里的纯 JSON（字段稳定，将来可直接 POST 给后端），只是记录时点从「框选时」变成「首次检测时」——语义上等价于「从第一次检测起有什么变化」。基线项数上限 500，非法基线（不是对象 / 字段值嵌套 / 超上限）在加载时归一为 `null`，即下次检测重新记录。
+
+规则将来要经接口提交给**后端执行**，扩展只负责创建规则。届时只需替换宿主侧的取内容层（`querySelector` / `outerHTML` / `textContent` ↔ 服务端解析器），本地执行那一段（`chrome.userScripts` 注入壳）可整段删除，取键函数体与基线原样搬。目前**不做**接口提交（等接口定下来）；也不做沙箱语法校验，用户函数的语法错误在检测时以「注入失败：…」呈现；框选保存时**不预演**取键函数，写坏了在首次检测时以「执行失败：…」呈现且不写入基线。用户函数里写死循环会卡住该标签页的用户脚本世界，也因此没有超时保护。
+
+### 提取测试
+
+预览页标题栏的「提取测试」展开一个抽屉，用来试「**从一份完整 HTML 里怎么取出我要的内容**」：选数据源、写一段 JS 函数体、点「运行」，直接看输出。这是将来流水线里「提取节点」的试验台 —— 先把取内容的函数在这里试通，再接进规则或工作流。
+
+- **数据源**：`整页 HTML`（暂存记录的原始 HTML，默认）或 `框选容器`（当前待保存选区的 `outerHTML`，只测你框住的那一块；没有待保存选区时提示先框选）。
+- **入参预览**：数据源下方直接显示**即将送给函数体的那段 HTML 源码**（默认就展开，即整页源码），随数据源切换、框选父 / 子容器、重新展开面板实时更新；标注数据源与字符数。超过 2 万字符只截断预览，**运行仍用完整 HTML**。
+- **函数体入参是 `document`**：由 HTML 字符串经 `DOMParser` 解析而来，`querySelector` / `querySelectorAll` / `textContent` / `getAttribute` 都能用，但**不加载资源、不跑页面脚本、没有布局与计算样式**，所以只能按标签结构取内容。需要 `return`，支持 `await`。返回 `undefined` 视为忘了写 `return`，单独提示。
+- **输出可视化**：先给 JSON（函数 / DOM 节点 / 循环引用都会降级成可读字符串，不会因为一个节点就整份报错）；结果是「对象数组且字段都是基本类型」时**额外渲染成表格**（表头取对象的键）。状态行按三段给出：`入参 <数据源> · N 字符 ｜ 行为 DOMParser 解析 + 执行函数 · X ms ｜ 输出 M 字符`。
+- 函数体语法错误、执行抛错都报「执行出错：…」；输出超过 20 万字符会截断。函数体写成死循环时 8 秒后判定超时，并**整个换掉执行器**（沙箱页被卡死时连回消息都发不出来）。
+
+**为什么要在沙箱页里执行**：扩展页的 CSP 由 Chrome 锁定，禁 `eval` / `new Function`。实测结论：`srcdoc` iframe 会**继承父页 CSP**（内联脚本都不跑），而加了 `sandbox` 的 iframe 是不透明源、宿主读不到它的文档（`contentDocument` 为 `null`）—— 框选依赖同源读取，所以这条路走不通。唯一 CSP 合法的入口是 `manifest.json` 的 `sandbox.pages`：沙箱页跑在**自己的 CSP**（含 `'unsafe-eval'`）与不透明源里，可以用 `eval`，但没有扩展 API，与宿主只能 `postMessage`。因此两边只交换 HTML 字符串与函数体：沙箱页读不到宿主文档，宿主也读不到沙箱页文档。
 
 ### Cookie 同步
 
@@ -55,8 +102,9 @@ Chrome（120+）Manifest V3 扩展，提供三块能力：
 manifest.json        # Manifest V3 配置
 src/background.js    # Service Worker：消息与 alarm 事件
 src/popup/           # 弹窗入口（popup.html/js/css），左侧菜单 + 右侧子页面
-src/pages/           # cookie.js / savepage.js / settings.js 三个页面 View
+src/pages/           # cookie.js / savepage.js / detect.js / settings.js 四个页面 View
 src/models/          # store.js（导航与业务状态）、sync.model.js（配置校验、加密、定时任务）
+src/compare/         # compare.js/preview.js（对比页与单页预览渲染、连续框选交互、提取测试）、compare.model.js（逐对 diff）、detection.model.js（变更检测规则：选择器构建、列表/详情判定、用户脚本注入代码生成、列表对比按键 diff 与基线归一）、extract.sandbox.html（沙箱执行器：扩展里唯一能跑用户函数的地方）
 assets/vendor/       # Timeless 0.33.0 运行时、dmui 组件、CryptoJS 4.2.0 独立副本
 assets/icons/        # 全尺寸扩展图标
 scripts/             # 图标导出与 UI 资产同步脚本
@@ -68,10 +116,18 @@ scripts/             # 图标导出与 UI 资产同步脚本
 
 ## 权限
 
-`activeTab`、`cookies`、`scripting`、`storage`、`alarms`、`clipboardWrite`，以及对 HTTP(S) 站点的 host 权限（读取 Cookie、访问用户指定的同步接口）。
+`activeTab`、`cookies`、`scripting`、`userScripts`、`storage`、`alarms`、`clipboardWrite`，以及对 HTTP(S) 站点的 host 权限（读取 Cookie、访问用户指定的同步接口）。
+
+`userScripts` 用于执行用户脚本检测规则（JS 函数 / 列表对比）：Chrome 138 起用户还需在扩展详情页手动打开「允许用户脚本」，否则 `chrome.userScripts` 为 `undefined`，这两类规则置灰。
+
+`manifest.json` 另声明了 `sandbox.pages`（`src/compare/extract.sandbox.html`）与对应的 `content_security_policy.sandbox`：沙箱页用**自己的 CSP**、允许 `'unsafe-eval'`，是扩展里唯一能跑用户写的函数体的地方（预览页「提取测试」）。它跑在不透明源里、拿不到任何扩展 API，与宿主只能 `postMessage`，且只接收 HTML 字符串与函数体 —— 碰不到实时页面，也读不到宿主文档。扩展不做沙箱语法校验，用户函数的语法错误在检测时以「注入失败：…」呈现。
 
 ## 开发检查
 
-本目录无构建命令。对比算法可直接用浏览器打开 `test/compare.model.test.html`（逐对 diff、报告与预览构建）、`test/compare.render.test.html`（对比页渲染）、`test/compare.preview.test.html`（单页预览）、`test/popup.savepage.test.html`（弹窗暂存列表）检查；扩展改动后手动验证：加载扩展 → 打开任一 HTTP(S) 页面 → 暂存至少两条记录 → 开始对比。
+本目录无构建命令。测试用的 HTML 依赖 ES module 动态导入，`file://` 下会被 CORS 拦掉，需在仓库根起一个静态服务（如 `python3 -m http.server 8791`）后访问 `http://127.0.0.1:8791/test/<文件>`；断言通过时给 `body` 加 `data-test-passed`，抛错时加 `data-test-error`。改动 ES module 后在浏览器里重跑测试要先禁用缓存（`Network.setCacheDisabled`）再重载，否则跑的是旧代码。测试文件：`test/compare.model.test.html`（逐对 diff、报告与预览构建）、`test/compare.render.test.html`（对比页渲染，HEAD 起即失败、与业务改动无关）、`test/compare.preview.test.html`（单页预览、连续框选建规则与编号重绘、操作栏沿祖先链切父／子容器、预览文档滚动时框与操作栏跟随内容、提取测试面板：整页 / 框选容器两种数据源、JSON 与表格输出、语法错误报错）、`test/detection.model.test.html`（选择器构建、容器识别、列表/详情判定、编号、规则求值与归一化、列表对比的类型注册与基线归一）、`test/detection.script.test.html`（JS 函数规则生成代码的通过/不通过、self/others 形态、失败分支与语法错误）、`test/detection.list.test.html`（列表对比取键与按键 diff：基线未记录/一致/增删改/仅调序、失败分支、截断与不嵌 HTML）、`test/popup.savepage.test.html`（弹窗暂存列表、分组的固定存在与删除）、`test/popup.detect.test.html`（弹窗变更检测列表、按来源限定、检测与删除、未开启用户脚本时 JS 函数 / 列表对比规则置灰）、`test/popup.detect.script.test.html`（弹窗执行用户脚本规则：注入代码含同组编号与基线 JSON、结果按 passed / 基线 / 三行 diff 呈现、基线写回 storage）。
 
-Chrome API 依据：[模块 Service Worker](https://developer.chrome.com/docs/extensions/develop/concepts/service-workers/basics)、[Cookie 权限](https://developer.chrome.com/docs/extensions/reference/api/cookies)、[定时任务](https://developer.chrome.com/docs/extensions/reference/api/alarms)、[脚本注入](https://developer.chrome.com/docs/extensions/reference/api/scripting)。
+扩展改动后手动验证：加载扩展 → 在扩展详情页打开「允许用户脚本」→ 打开任一 HTTP(S) 页面 → 暂存至少两条记录 → 开始对比；再进「变更检测」：从暂存列表打开预览页 → 点「框选」拖一个框 → 用操作栏点「父容器」核对轮廓与预填值跟着换、点「子容器」退回 → 滚动预览核对框与轮廓跟着内容走（且内容不抖动）→ 确认容器与预填值 → 保存一条颜色规则；再框第二个块 → 类型切到「JS 函数」→ 写 `return self.text.includes("…")`（或 `return others[1] && others[1].text !== self.text`）→ 保存；再框一个列表容器 → 类型切到「列表对比」→ 按该站点改写取键函数 → 保存 → 三个框都带编号；回到弹窗核对四种类型的条件描述与形态徽标，在同一站点与另一站点标签页点「检测」，核对满足/不满足/未找到/执行失败四种呈现与置灰原因；列表对比规则应先显示「待记录基线」，首次检测后变成「已记录基线 N 项」，改动页面（增 / 删 / 改一项、只调换顺序）后再次检测核对三行 diff 与计数（只调序应为「无变更」）；关掉「允许用户脚本」重载扩展后，JS 函数 / 列表对比规则置灰且页级提示出现，颜色 / 内容规则不受影响。
+
+另外在预览页点标题栏「提取测试」展开抽屉：核对入参预览默认就是整页 HTML 源码 → 数据源切「框选容器」核对入参预览换成该容器的 `outerHTML`（且整页里别的内容不再出现）→ 写 `return Array.from(document.querySelectorAll("li")).map((li) => ({ 文本: li.textContent.trim() }))` → 运行，核对 JSON、表格与状态行的入参 / 行为 / 输出三段；再框另一个容器（或点「父容器」）核对入参预览跟着换；把数据源切回「整页 HTML」再运行（没有待保存选区时切到「框选容器」应提示先框选）；再把函数体改成 `return (` 核对「执行出错：…」。沙箱执行器 iframe 不占位，面板展开时预览是被压缩而不是被盖住。
+
+Chrome API 依据：[模块 Service Worker](https://developer.chrome.com/docs/extensions/develop/concepts/service-workers/basics)、[Cookie 权限](https://developer.chrome.com/docs/extensions/reference/api/cookies)、[定时任务](https://developer.chrome.com/docs/extensions/reference/api/alarms)、[脚本注入](https://developer.chrome.com/docs/extensions/reference/api/scripting)、[沙箱页](https://developer.chrome.com/docs/extensions/reference/manifest/sandbox)。

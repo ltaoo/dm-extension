@@ -1,0 +1,248 @@
+<!doctype html><html data-n="test-document"><head data-n="test-head"><meta charset="utf-8">
+<style data-n="test-style">
+  #fixture { display: flex; flex-direction: column; gap: 8px; width: 260px; }
+  #alpha { display: flex; flex-direction: column; padding: 10px; background: #f5f5f5; }
+  #price { width: 200px; height: 40px; line-height: 40px; }
+  #stock { width: 200px; height: 40px; line-height: 40px; }
+  .color-text { color: rgb(229, 57, 53); }
+  .color-bg { background-color: #e53935; }
+  .color-named { color: red; }
+  .plain { color: rgb(0, 0, 0); background-color: rgba(0, 0, 0, 0); }
+</style>
+</head><body data-n="test-body">
+<div id="fixture" data-n="fixture">
+  <div id="alpha" data-n="alpha"><div id="price" data-n="price">¥100</div><div id="stock" data-n="stock">SOLD</div></div>
+  <div id="dup" data-n="dup"><span id="target">甲</span><span id="target">乙</span></div>
+  <ul id="list" data-n="list">
+    <li>苹果 ¥3</li>
+    <li>香蕉 ¥5</li>
+    <li>橙子 ¥7</li>
+  </ul>
+  <div id="detail" data-n="detail">
+    <b>标题</b>
+    <i>说明</i>
+  </div>
+  <div id="leaf" data-n="leaf">纯文本</div>
+  <p class="color-text" data-n="color-text">红色文字</p>
+  <p class="color-bg" data-n="color-bg">红色背景</p>
+  <p class="color-named" data-n="color-named">具名色</p>
+  <p class="plain" data-n="plain">普通</p>
+  <p class="content" data-n="content-text"> 已售罄 · Sold Out  </p>
+</div>
+<script type="module" data-n="test-script">
+window.addEventListener("error", (event) => document.body.setAttribute("data-test-error", event.message));
+window.addEventListener("unhandledrejection", (event) => document.body.setAttribute("data-test-error", String((event.reason && event.reason.message) || event.reason)));
+import { DETECTION_TYPE_LABELS, USER_SCRIPT_TYPES, build_selector, describe_rule, describe_shape, detection_rules_key, evaluate_detection_rule, hostname_of, identify_container, inspect_content, node_label, normalize_detection_rules, number_rules, read_baseline } from "../src/compare/detection.model.js";
+
+const query = (name) => document.querySelector(`[data-n="${name}"]`);
+const price = query("price");
+const stock = query("stock");
+const alpha = query("alpha");
+const dup = query("dup");
+
+// —— hostname_of ——
+if (detection_rules_key !== "detection-rules") throw new Error("存储键应为 detection-rules");
+if (hostname_of("https://example.com/a?b=1") !== "example.com") throw new Error("应取 hostname");
+if (hostname_of("http://sub.example.com/") !== "sub.example.com") throw new Error("应保留子域");
+if (hostname_of("chrome://extensions") !== "") throw new Error("非 http(s) 应返回空");
+if (hostname_of("") !== "" || hostname_of(undefined) !== "") throw new Error("非法 URL 应返回空");
+
+// —— node_label ——
+if (node_label(price) !== "div#price") throw new Error(`应优先展示 id：${node_label(price)}`);
+if (node_label(query("color-text")) !== "p.color-text") throw new Error(`无 id 时展示首个类名：${node_label(query("color-text"))}`);
+if (node_label(document.createElement("section")) !== "section") throw new Error("无 id/类名时展示标签");
+if (node_label(null) !== "") throw new Error("空节点应返回空字符串");
+
+// —— build_selector：唯一 id → #price ——
+if (build_selector(price) !== "#price") throw new Error(`唯一 id 应直接作为选择器：${build_selector(price)}`);
+if (document.querySelector(build_selector(price)) !== price) throw new Error("唯一 id 选择器应往返一致");
+
+// 重复 id 子树 → tag:nth-of-type(k) 形态，且 querySelector 往返一致。
+const second = dup.querySelectorAll("#target")[1];
+const dup_selector = build_selector(second);
+if (!dup_selector.includes("nth-of-type")) throw new Error(`重复 id 应退化为 nth-of-type：${dup_selector}`);
+if (document.querySelector(dup_selector) !== second) throw new Error(`重复 id 选择器应往返一致：${dup_selector}`);
+
+// 选中 body → "body"。
+if (build_selector(document.body) !== "body") throw new Error(`body 选择器应为 body：${build_selector(document.body)}`);
+
+// —— identify_container ——
+const box_of = (element) => element.getBoundingClientRect();
+const union = (a, b) => {
+  const first = box_of(a);
+  const second = box_of(b);
+  const left = Math.min(first.left, second.left);
+  const top = Math.min(first.top, second.top);
+  const right = Math.max(first.right, second.right);
+  const bottom = Math.max(first.bottom, second.bottom);
+  return { left, top, right, bottom, width: right - left, height: bottom - top };
+};
+const inset = (element, amount) => {
+  const box = box_of(element);
+  return { left: box.left + amount, top: box.top + amount, right: box.right - amount, bottom: box.bottom - amount, width: box.width - amount * 2, height: box.height - amount * 2 };
+};
+
+const spanned = identify_container(document, union(price, stock));
+if (spanned !== alpha) throw new Error(`跨 #price+#stock 的框应识别为 #alpha，实际 ${node_label(spanned)}`);
+
+const inside = identify_container(document, inset(price, 2));
+if (inside !== price) throw new Error(`#price 内部的小框应识别为 #price，实际 ${node_label(inside)}`);
+
+const zero = identify_container(document, { left: box_of(price).left + 30, top: box_of(price).top + 10, right: box_of(price).left + 30, bottom: box_of(price).top + 10, width: 0, height: 0 });
+if (zero !== price) throw new Error(`零面积应退化为该点最深元素 #price，实际 ${node_label(zero)}`);
+
+const outside = identify_container(document, { left: -300, top: -300, right: -200, bottom: -200, width: 100, height: 100 });
+if (outside !== document.body) throw new Error(`全超出视口应回退 body，实际 ${node_label(outside)}`);
+
+// —— evaluate_detection_rule ——
+
+// 颜色：经 color 命中。
+const by_color = evaluate_detection_rule({ type: "color", selector: '[data-n="color-text"]', expected: "rgb(229, 57, 53)" });
+if (!by_color.found || !by_color.passed || by_color.kind !== "color") throw new Error(`颜色应经 color 命中：${JSON.stringify(by_color)}`);
+if (!by_color.actual.includes("文字") || !by_color.actual.includes("背景")) throw new Error(`实际值应同时含文字与背景：${by_color.actual}`);
+
+// 颜色：经 background-color 命中（文字为默认黑色，未命中文字色）。
+const by_background = evaluate_detection_rule({ type: "color", selector: '[data-n="color-bg"]', expected: "#e53935" });
+if (!by_background.passed) throw new Error(`颜色应经 background-color 命中：${JSON.stringify(by_background)}`);
+
+// 颜色：具名色期望值应能被解析。
+const by_named = evaluate_detection_rule({ type: "color", selector: '[data-n="color-named"]', expected: "red" });
+if (!by_named.passed) throw new Error(`具名色期望值应被解析：${JSON.stringify(by_named)}`);
+
+// 颜色：都不命中时也要给出实际值。
+const missed = evaluate_detection_rule({ type: "color", selector: '[data-n="plain"]', expected: "rgb(12, 34, 56)" });
+if (!missed.found || missed.passed) throw new Error("都不命中时应为不满足");
+if (!missed.actual) throw new Error("不命中时也应给出实际值");
+
+// 内容：折叠空白后的「包含」匹配。
+const hit = evaluate_detection_rule({ type: "content", selector: '[data-n="content-text"]', expected: "已售罄 · Sold" });
+if (!hit.found || !hit.passed || hit.kind !== "content") throw new Error(`内容应命中：${JSON.stringify(hit)}`);
+if (hit.actual !== "已售罄 · Sold Out") throw new Error(`实际值应为折叠空白后的文本：${hit.actual}`);
+const no_hit = evaluate_detection_rule({ type: "content", selector: '[data-n="content-text"]', expected: "缺货" });
+if (no_hit.passed) throw new Error("内容不含期望值时应不通过");
+
+// 内容：大小写敏感（文本 SOLD 配 sold 应不通过）。
+const upper = evaluate_detection_rule({ type: "content", selector: '[data-n="stock"]', expected: "sold" });
+if (upper.passed) throw new Error("内容匹配应大小写敏感");
+const upper_ok = evaluate_detection_rule({ type: "content", selector: '[data-n="stock"]', expected: "SOLD" });
+if (!upper_ok.passed) throw new Error("大小写一致时应通过");
+
+// 选择器不存在 → found:false 且 message 含「未找到」。
+const missing = evaluate_detection_rule({ type: "color", selector: "#not-there", expected: "rgb(0, 0, 0)" });
+if (missing.found || missing.passed || !missing.message.includes("未找到")) throw new Error(`未找到节点时应给出提示：${JSON.stringify(missing)}`);
+
+// —— inspect_content：列表 / 详情 ——
+
+// 三个同指纹兄弟 → 列表，items 各自递归成详情。
+const list_info = inspect_content(query("list"));
+if (list_info.shape !== "list") throw new Error(`同结构兄弟应为列表：${JSON.stringify(list_info.shape)}`);
+if (list_info.item_count !== 3 || list_info.items.length !== 3) throw new Error(`列表应有 3 项：${list_info.item_count}`);
+if (list_info.items[0].shape !== "detail" || list_info.items[0].items.length !== 0) throw new Error(`列表项应递归成详情：${JSON.stringify(list_info.items[0])}`);
+if (list_info.items[1].text !== "香蕉 ¥5") throw new Error(`列表项文本应折叠空白：${list_info.items[1].text}`);
+if (!list_info.html.startsWith("<ul") || !list_info.html.includes("<li>苹果 ¥3</li>")) throw new Error(`应带 outerHTML：${list_info.html}`);
+if (list_info.text !== "苹果 ¥3 香蕉 ¥5 橙子 ¥7") throw new Error(`应带折叠空白后的整体文本：${list_info.text}`);
+
+// 子节点结构不同 → 详情，items 为空。
+const detail_info = inspect_content(query("detail"));
+if (detail_info.shape !== "detail" || detail_info.item_count !== 0 || detail_info.items.length !== 0) throw new Error(`结构不同应为详情：${JSON.stringify(detail_info)}`);
+if (detail_info.text !== "标题 说明") throw new Error(`详情也应带文本：${detail_info.text}`);
+
+// 无子元素 → 详情。
+const leaf_info = inspect_content(query("leaf"));
+if (leaf_info.shape !== "detail" || leaf_info.items.length !== 0) throw new Error(`无子元素应为详情：${JSON.stringify(leaf_info)}`);
+
+// 形态展示名：列表带项数，详情不带；老规则（无 shape）不渲染。
+if (describe_shape(list_info) !== "列表 · 3 项") throw new Error(`列表徽标错误：${describe_shape(list_info)}`);
+if (describe_shape(detail_info) !== "详情") throw new Error(`详情徽标错误：${describe_shape(detail_info)}`);
+if (describe_shape({ type: "color" }) !== "" || describe_shape(null) !== "") throw new Error("无形态时不应渲染徽标");
+
+// —— number_rules：同组按 created_at 编号，编号即 others 的键 ——
+const numbered = number_rules([
+  { id: "b", group_id: "g", created_at: 2, selector: "#b" },
+  { id: "a", group_id: "g", created_at: 1, selector: "#a" },
+  { id: "x", group_id: "", created_at: 3, selector: "#x" },
+], { group_id: "g" });
+if (numbered.map((rule) => rule.id).join(",") !== "a,b") throw new Error(`应按 created_at 排序：${numbered.map((rule) => rule.id).join(",")}`);
+if (numbered.map((rule) => rule.number).join(",") !== "1,2") throw new Error("编号应从 1 开始");
+// 没有 group_id 的老规则只有自己。
+const lone = number_rules([{ id: "lone", group_id: "", created_at: 5, selector: "#l" }, { id: "other", group_id: "g", created_at: 1, selector: "#o" }], { id: "lone", group_id: "" });
+if (lone.length !== 1 || lone[0].number !== 1) throw new Error(`无 group_id 的老规则应只有自己：${JSON.stringify(lone)}`);
+
+// —— normalize_detection_rules / describe_rule ——
+const normalized = normalize_detection_rules([
+  null,
+  { id: "a", type: "color", expected: "rgb(1, 2, 3)", selector: "#x", name: " 价格 ", hostname: "example.com" },
+  { id: "a", type: "content", expected: "重复 id", selector: "#y" },
+  { id: "b", type: "bogus", expected: "错类型", selector: "#z" },
+  { id: "c", type: "content", expected: "缺选择器" },
+  { id: "", type: "content", expected: "缺 id", selector: "#w" },
+  { id: "d", type: "content", expected: "合法", selector: "#v", node: "p", source_url: "https://example.com/", source_record_id: "r1", created_at: 7 },
+]);
+if (normalized.length !== 2) throw new Error(`应丢弃非法项并按 id 去重，实际 ${normalized.length}`);
+if (normalized[0].id !== "a" || normalized[0].name !== "价格") throw new Error("应保留首条并去空白");
+if (normalized[0].type !== "color" || !DETECTION_TYPE_LABELS[normalized[0].type]) throw new Error("应保留合法 type");
+if (normalized[1].id !== "d" || normalized[1].created_at !== 7) throw new Error("应保留合法项字段");
+if (normalize_detection_rules(undefined).length !== 0) throw new Error("非数组应返回空");
+if (normalize_detection_rules([{ id: "e", type: "color", expected: "" }]).length !== 0) throw new Error("缺选择器应被丢弃");
+
+if (describe_rule({ type: "color", expected: "rgb(229, 57, 53)" }) !== "颜色为 rgb(229, 57, 53)") throw new Error("颜色描述错误");
+if (describe_rule({ type: "content", expected: "已售罄" }) !== "内容匹配 已售罄") throw new Error("内容描述错误");
+
+// JS 函数规则：函数体非空才保留，并保留 code / group_id / shape / item_count。
+const script_rules = normalize_detection_rules([
+  { id: "s1", name: "JS 库存", type: "script", code: "return self.text.includes(\"已售罄\");", selector: "#stock", group_id: " g1 ", shape: "list", item_count: 3, hostname: "example.com" },
+  { id: "s2", name: "空函数体", type: "script", code: "   \n  ", selector: "#a" },
+  { id: "s3", name: "缺 code", type: "script", selector: "#b" },
+]);
+if (script_rules.length !== 1) throw new Error(`空函数体的 script 规则应被丢弃：${JSON.stringify(script_rules)}`);
+const script_rule = script_rules[0];
+if (script_rule.code !== "return self.text.includes(\"已售罄\");") throw new Error(`应保留函数体：${script_rule.code}`);
+if (script_rule.group_id !== "g1") throw new Error(`应保留并去空白 group_id：${script_rule.group_id}`);
+if (script_rule.shape !== "list" || script_rule.item_count !== 3) throw new Error(`应保留形态：${script_rule.shape}/${script_rule.item_count}`);
+// 老规则没有这些字段时给稳定默认值（纯 JSON、字段稳定，便于将来直接 POST）。
+const legacy = normalize_detection_rules([{ id: "l1", type: "color", expected: "red", selector: "#r" }])[0];
+if (legacy.code !== "" || legacy.group_id !== "" || legacy.shape !== "" || legacy.item_count !== 0) throw new Error(`老规则应补稳定默认值：${JSON.stringify(legacy)}`);
+if (legacy.shape !== "" && describe_shape(legacy) !== "") throw new Error("老规则不应有形态徽标");
+
+// 非法 shape 归一为空串。
+const odd = normalize_detection_rules([{ id: "l2", type: "color", expected: "red", selector: "#r", shape: "bogus", item_count: "x" }])[0];
+if (odd.shape !== "" || odd.item_count !== 0) throw new Error(`非法形态应归一：${JSON.stringify(odd)}`);
+
+if (describe_rule({ type: "script", code: "\n  return true;\n" }) !== "JS 函数 return true;") throw new Error(`JS 描述应取首行：${describe_rule({ type: "script", code: "\n  return true;\n" })}`);
+if (!describe_rule({ type: "script", code: "x".repeat(80) }).endsWith("…")) throw new Error("过长首行应截断");
+
+// —— 列表对比规则：类型注册、code / baseline 归一、描述 ——
+if (DETECTION_TYPE_LABELS.list !== "列表对比") throw new Error(`应注册列表对比类型：${DETECTION_TYPE_LABELS.list}`);
+if (!USER_SCRIPT_TYPES.has("script") || !USER_SCRIPT_TYPES.has("list") || USER_SCRIPT_TYPES.has("color")) throw new Error("需要用户脚本的类型应含 script 与 list");
+
+const list_rules = normalize_detection_rules([
+  { id: "n1", name: "列表库存", type: "list", code: 'return { "甲": { price: 1 } };', selector: "#list", baseline: { "甲": { price: 1 }, "乙": { price: 2 } }, group_id: " g2 ", shape: "list", item_count: 3, hostname: "example.com" },
+  { id: "n2", name: "空函数体", type: "list", code: "  \n ", selector: "#a" },
+  { id: "n3", name: "缺 code", type: "list", selector: "#b" },
+  { id: "n4", name: "非法基线", type: "list", code: "return {};", selector: "#c", baseline: { "甲": { nested: { deep: 1 } } } },
+]);
+if (list_rules.length !== 2) throw new Error(`空函数体的 list 规则应被丢弃：${JSON.stringify(list_rules)}`);
+const list_rule = list_rules[0];
+if (list_rule.code !== 'return { "甲": { price: 1 } };') throw new Error(`应保留取键函数体：${list_rule.code}`);
+if (!list_rule.baseline || Object.keys(list_rule.baseline).length !== 2) throw new Error(`应保留基线：${JSON.stringify(list_rule.baseline)}`);
+if (list_rule.baseline["甲"].price !== 1) throw new Error("基线字段值应保留");
+if (list_rule.group_id !== "g2" || list_rule.shape !== "list" || list_rule.item_count !== 3) throw new Error(`应保留形态与分组：${JSON.stringify(list_rule)}`);
+if (list_rules[1].baseline !== null) throw new Error(`非法基线应归一为 null：${JSON.stringify(list_rules[1].baseline)}`);
+
+if (describe_rule({ type: "list", baseline: { "甲": {}, "乙": {} } }) !== "列表对比 · 基线 2 项") throw new Error(`有基线时的描述错误：${describe_rule({ type: "list", baseline: { "甲": {}, "乙": {} } })}`);
+if (describe_rule({ type: "list", baseline: null }) !== "列表对比 · 待记录基线") throw new Error(`无基线时的描述错误：${describe_rule({ type: "list", baseline: null })}`);
+if (describe_rule({ type: "list" }) !== "列表对比 · 待记录基线") throw new Error("缺基线字段也应显示待记录");
+
+// —— read_baseline：归一与拒绝分支 ——
+const checked = read_baseline({ "甲": { a: "x", b: 1, c: true, d: null } });
+if (checked.error || !checked.baseline) throw new Error(`合法基线应通过：${JSON.stringify(checked)}`);
+if (read_baseline(null).baseline !== null || read_baseline(undefined).baseline !== null) throw new Error("缺基线应归一为 null");
+if (read_baseline([{ a: 1 }]).error === "") throw new Error("数组应被拒绝");
+if (read_baseline({ "甲": { a: {} } }).error === "") throw new Error("字段值嵌套对象应被拒绝");
+if (read_baseline({ "甲": 1 }).error === "") throw new Error("项不是对象应被拒绝");
+const huge_baseline = {};
+for (let index = 0; index < 501; index += 1) huge_baseline[`k${index}`] = { a: 1 };
+if (read_baseline(huge_baseline).error === "") throw new Error("键数超限应被拒绝");
+
+document.body.setAttribute("data-test-passed", "");
+</script></body></html>

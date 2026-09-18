@@ -1,6 +1,20 @@
 export const comparison_records_key = "comparison-records";
 export const comparison_group_key = "comparison-group";
+export const comparison_groups_key = "comparison-groups";
 export const default_comparison_group = "分组 1";
+
+// 分组是固定存在的：分组名单独持久化，不随组内记录清空而消失，只有显式删除才会移除。
+export function normalize_group_names(names) {
+  const seen = new Set();
+  const result = [];
+  for (const name of Array.isArray(names) ? names : []) {
+    const value = typeof name === "string" ? name.trim() : "";
+    if (!value || seen.has(value)) continue;
+    seen.add(value);
+    result.push(value);
+  }
+  return result;
+}
 
 export function group_comparison_records(records) {
   const groups = [];

@@ -32,11 +32,20 @@ export default function SavePageView({ store }) {
         key: "name",
         render(group) {
           const active = computed(state.comparison_group, (name) => name === group.name);
-          return Button({
-            store: ui.group_button(group.name),
-            class: classNames(["comparison-group-tab", computed(active, (selected) => selected ? "is-active" : "")]),
-            attributes: { n: "comparison-group-tab", role: "tab", "aria-selected": computed(active, String), tabindex: computed(active, (selected) => selected ? "0" : "-1") },
-          }, [group.name]);
+          const is_active = computed(active, (selected) => selected ? "is-active" : "");
+          const buttons = ui.group_button(group.name);
+          return View({ class: classNames(["comparison-group-tab-wrap", is_active]), attributes: { n: "comparison-group-tab-wrap" } }, [
+            Button({
+              store: buttons.tab,
+              class: classNames(["comparison-group-tab", is_active]),
+              attributes: { n: "comparison-group-tab", role: "tab", "aria-selected": computed(active, String), tabindex: computed(active, (selected) => selected ? "0" : "-1") },
+            }, [group.name]),
+            Button({
+              store: buttons.remove,
+              class: "comparison-group-remove",
+              attributes: { n: "comparison-group-remove", title: `删除分组「${group.name}」`, "aria-label": `删除分组「${group.name}」` },
+            }, ["×"]),
+          ]);
         },
       }),
       Button({ store: ui.add_group$, attributes: { n: "add-group-button" } }, ["新增分组"]),
@@ -79,7 +88,7 @@ export default function SavePageView({ store }) {
       View({ class: "muted comparison-records-empty", attributes: { n: "comparison-records-empty", hidden: computed(state.comparison_count, (count) => count ? true : undefined) } }, ["当前分组暂无暂存记录"]),
     ]),
     View({ class: "page-help", attributes: { n: "comparison-help" } }, [
-      "暂存会保存移除 script 标签后的当前页面到当前分组。列表仅显示当前分组：点击记录在新标签页预览渲染效果，「删除」移除单条记录，「清空」仅清空当前分组。对比需当前分组至少两条记录；每条记录与其前一条对比：新增绿框、移除节点原位红色遮罩并标「删除」、变更描边，面板下方附节点清单简报。",
+      "暂存会保存移除 script 标签后的当前页面到当前分组（canvas 会转成 base64 图片，避免暂存后画布区域空白）。分组固定存在：组内记录清空后分组仍然保留，点分组标签上的「×」才会删除该分组及其全部记录（保留至少一个分组）。列表仅显示当前分组：点击记录在新标签页预览渲染效果，「删除」移除单条记录，「清空」仅清空当前分组。对比需当前分组至少两条记录；每条记录与其前一条对比：新增绿框、移除节点原位红色遮罩并标「删除」、变更描边，面板下方附节点清单简报。",
     ]),
   ]);
 }

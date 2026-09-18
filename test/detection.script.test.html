@@ -1,0 +1,96 @@
+<!doctype html><html data-n="test-document"><head data-n="test-head"><meta charset="utf-8">
+<style data-n="test-style">
+  #fixture { display: flex; flex-direction: column; gap: 8px; width: 260px; }
+</style>
+</head><body data-n="test-body">
+<div id="fixture" data-n="fixture">
+  <div id="sold" data-n="sold"> 已售罄 · Sold Out </div>
+  <div id="stock" data-n="stock">有货</div>
+  <ul id="cart" data-n="cart"><li>苹果 ¥3</li><li>香蕉 ¥5</li><li>橙子 ¥7</li></ul>
+</div>
+<script type="module" data-n="test-script">
+// 宿主生成的注入代码不依赖 chrome：本页用它跑一遍真实的字面代码（等价于 userScripts.execute 里执行的那段）。
+window.addEventListener("error", (event) => document.body.setAttribute("data-test-error", event.message));
+window.addEventListener("unhandledrejection", (event) => document.body.setAttribute("data-test-error", String((event.reason && event.reason.message) || event.reason)));
+import { build_script_code, number_rules } from "../src/compare/detection.model.js";
+
+const query = (name) => document.querySelector(`[data-n="${name}"]`);
+const sold = query("sold");
+const sold_text = sold.textContent.replace(/\s+/g, " ").trim();
+
+const code_of = (rule, rules) => build_script_code(rule, number_rules(rules || [rule], rule));
+// 与 userScripts 一样：代码是一段普通脚本（这里是表达式），直接构造后调用。
+const run = (rule, rules) => new Function("return (\n" + code_of(rule, rules) + "\n)")();
+
+// —— 生成的代码只嵌选择器与用户代码，内容运行时现取 ——
+const base = { id: "r1", type: "script", selector: "#sold", group_id: "g", created_at: 1, code: 'return self.text.includes("已售罄");' };
+const base_code = code_of(base);
+if (!base_code.includes("function inspect_content")) throw new Error("生成代码应内联自包含的取内容函数");
+if (!base_code.includes('"#sold"')) throw new Error(`生成代码应嵌入自身选择器：${base_code.slice(0, 200)}`);
+if (base_code.includes("已售罄") && base_code.includes("Sold Out")) throw new Error("生成代码不应嵌入页面文本");
+if (base_code.includes("<li>")) throw new Error("生成代码不应嵌入页面 HTML");
+
+// —— 通过 / 不通过：函数的返回值经 Boolean() 归一 ——
+const hit = run(base);
+if (!hit.found || !hit.passed || hit.kind !== "script") throw new Error(`函数返回 true 应通过：${JSON.stringify(hit)}`);
+if (hit.actual !== `详情 · ${sold_text.length} 字`) throw new Error(`详情摘要应为「详情 · N 字」：${hit.actual}`);
+if (!hit.message.includes("满足条件")) throw new Error(`应给出满足提示：${hit.message}`);
+
+const miss = run({ ...base, code: 'return self.text.includes("缺货");' });
+if (miss.passed) throw new Error("函数返回 false 应不通过");
+if (!miss.message.includes("不满足条件")) throw new Error(`应给出不满足提示：${miss.message}`);
+
+// 返回非布尔值用 Boolean() 归一；返回 undefined 视为写错。
+if (!run({ ...base, code: "return 1;" }).passed) throw new Error("真值应归一为通过");
+if (run({ ...base, code: "return null;" }).passed) throw new Error("null 应归一为不通过");
+const no_return = run({ ...base, code: "self.text.length;" });
+if (!no_return.error || no_return.passed) throw new Error(`没有 return 应报错：${JSON.stringify(no_return)}`);
+if (!no_return.message.includes("没有返回值")) throw new Error(`应提示忘了 return：${no_return.message}`);
+
+// —— self 的形态：详情 / 列表，列表项含 html / text / items ——
+const list_rule = { id: "r2", type: "script", selector: "#cart", group_id: "g", created_at: 2, code: "return self.shape === \"list\" && self.items.length >= 3;" };
+const list_hit = run(list_rule);
+if (!list_hit.passed) throw new Error(`列表形态应可读 items：${JSON.stringify(list_hit)}`);
+if (!list_hit.actual.startsWith("列表 · 3 项 · 各 ")) throw new Error(`列表摘要应为「列表 · N 项 · 各 M 字」：${list_hit.actual}`);
+const item_rule = { ...list_rule, code: 'return self.items[1].text.includes("香蕉") && self.items[1].html.includes("<li");' };
+if (!run(item_rule).passed) throw new Error("列表项应带 text 与 html");
+
+// —— others：同组其他框按编号取（编号与预览页画出的框号一致），取不到为 null ——
+const first = { id: "a", type: "script", selector: "#sold", group_id: "g", created_at: 1, code: "" };
+const second = { id: "b", type: "script", selector: "#stock", group_id: "g", created_at: 2, code: "" };
+const group = [first, second];
+
+const cross = run({ ...second, code: 'return others[1] !== null && others[1].text !== self.text;' }, group);
+if (!cross.passed) throw new Error(`第二个框应能按编号取到第一个框：${JSON.stringify(cross)}`);
+
+const mirror = run({ ...first, code: 'return Object.keys(others).join(",") === "2" && others[2].text === "有货";' }, group);
+if (!mirror.passed) throw new Error(`第一个框应能按编号取到第二个框：${JSON.stringify(mirror)}`);
+
+const gone = { id: "gone", type: "script", selector: "#not-there", group_id: "g", created_at: 1 };
+const orphan = { ...second, code: "return others[1] === null;" };
+const missing = run(orphan, [gone, orphan]);
+if (!missing.passed) throw new Error(`取不到的框应为 null：${JSON.stringify(missing)}`);
+if (!missing.actual.includes("其他框选 1/1 未找到")) throw new Error(`摘要应标注取不到的框：${missing.actual}`);
+
+// 编号只来自同 group_id：组内只有自己时 others 为空，有其他框时含其编号。
+const alone = run({ ...second, code: "return Object.keys(others).length === 0;" }, [second]);
+if (!alone.passed) throw new Error("组内只有自己时 others 应为空");
+const paired = run({ ...second, code: "return Object.keys(others).length === 1;" }, group);
+if (!paired.passed) throw new Error("组内有其他框时 others 应含其编号");
+
+// —— 失败分支：函数抛错 / 选择器取不到 / 用户代码语法错误 ——
+const thrown = run({ ...base, code: 'throw new Error("boom");' });
+if (!thrown.error || thrown.passed) throw new Error(`函数抛错应标记 error：${JSON.stringify(thrown)}`);
+if (!thrown.message.includes("函数执行出错") || !thrown.message.includes("boom")) throw new Error(`应带出错信息：${thrown.message}`);
+
+const not_found = run({ ...base, selector: "#nope" });
+if (not_found.found !== false || not_found.passed || not_found.error) throw new Error(`选择器取不到应为未找到：${JSON.stringify(not_found)}`);
+if (!not_found.message.includes("未找到目标节点")) throw new Error(`未找到应给出提示：${not_found.message}`);
+
+// 用户代码的语法错误会让整段脚本解析失败，try/catch 兜不住 —— 生产里拿到的是 InjectionResult.error。
+let syntax_error = null;
+try { run({ ...base, code: "return (" }); } catch (error) { syntax_error = error; }
+if (!(syntax_error instanceof SyntaxError)) throw new Error(`语法错误应在构造注入代码时抛出 SyntaxError：${syntax_error}`);
+
+document.body.setAttribute("data-test-passed", "");
+</script></body></html>

@@ -1,12 +1,14 @@
 import "../../assets/vendor/timeless.umd.min.js";
 import { createInputStore, createCheckboxStore } from "../../assets/vendor/src/dmui.js";
 import { default_settings, status_key, validate_settings } from "./sync.model.js";
-import { default_comparison_group, group_comparison_records } from "../compare/compare.model.js";
+import { comparison_groups_key, default_comparison_group, group_comparison_records, normalize_group_names } from "../compare/compare.model.js";
+import { USER_SCRIPT_TYPES, build_list_code, build_script_code, describe_rule, describe_shape, detection_rules_key, evaluate_detection_rule, hostname_of, normalize_detection_rules, number_rules, read_baseline } from "../compare/detection.model.js";
 
 const { ref, computed, combine, vm } = globalThis.Timeless;
 
 // 页面解析器：内置飞书域名 + 用户配置的域名规则共同决定。
 const PARSER_LABELS = { generic: "通用", feishu: "飞书文档" };
+const PAGE_TITLES = { cookie: "Cookie", savepage: "对比", detect: "变更检测", settings: "设置" };
 const parsers_key = "page-parsers";
 const comparison_records_key = "comparison-records";
 const comparison_group_key = "comparison-group";
@@ -91,6 +93,32 @@ function read_page_html(rules) {
     parent.removeChild(element);
   }
 
+  // canvas 的位图不在 DOM 里，克隆出来必然空白：把页面上每个 canvas 转成 base64 图片替换进克隆树，
+  // 让暂存/复制的 HTML 仍能看到 canvas 区域。toDataURL 抛出（画布被跨域内容污染）时保留原节点。
+  function replace_canvases(root) {
+    const sources = Array.from(document.querySelectorAll("canvas"));
+    const cloned = Array.from(root.querySelectorAll("canvas"));
+    for (let index = 0; index < cloned.length; index += 1) {
+      const source = sources[index];
+      const target = cloned[index];
+      if (!source || !target || !target.parentNode) continue;
+      let data_url = "";
+      try { data_url = source.toDataURL("image/png"); } catch (error) { continue; }
+      if (!data_url || data_url === "data:,") continue;
+      const image = document.createElement("img");
+      for (const attribute of Array.from(target.attributes)) image.setAttribute(attribute.name, attribute.value);
+      // canvas 的 width/height 是位图分辨率；换成图片后按画布实际渲染尺寸显示，避免 CSS 缩放失真。
+      const width = source.clientWidth || source.width;
+      const height = source.clientHeight || source.height;
+      if (width && height) {
+        image.setAttribute("width", String(width));
+        image.setAttribute("height", String(height));
+      }
+      image.setAttribute("src", data_url);
+      target.parentNode.replaceChild(image, target);
+    }
+  }
+
   // 返回该资源在列表中的序号；重复资源沿用首次序号，便于同样替换为占位符。
   function collect(list, seen, item) {
     if (!item.url) return 0;
@@ -106,6 +134,7 @@ function read_page_html(rules) {
 
   const root = document.documentElement.cloneNode(true);
   for (const node of Array.from(root.querySelectorAll("script,noscript,template"))) node.remove();
+  replace_canvases(root);
 
   const parser = resolve_parser(location.hostname, rules);
   const feishu = parser === "feishu";
@@ -199,12 +228,8 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
   const settings_ = combine({ profiles: profiles_, active: active_profile_ }, ({ profiles, active }) => profiles.find((profile) => profile.id === active) || profiles[0]);
   const status_ = combine({ statuses: statuses_, active: active_profile_ }, ({ statuses, active }) => ({ syncing: false, message: "尚未同步 Cookie", ...statuses[active] }));
   const url_ = ref("");
-  const page_domain_ = computed(url_, (value) => {
-    try {
-      const url = new URL(value);
-      return ["http:", "https:"].includes(url.protocol) ? url.hostname : "";
-    } catch { return ""; }
-  });
+  // 变更检测规则与 Cookie 同步共用同一套 hostname 解析（仅 http(s) 有效，见 detection.model.js）。
+  const page_domain_ = computed(url_, hostname_of);
   const message_ = ref("");
   const cookie_feedback_ = ref("");
   const copied_domain_ = ref("");
@@ -227,10 +252,23 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
   const savepage_loading_ = ref(false);
   const comparison_records_ = ref([]);
   const comparison_group_ = ref(default_comparison_group);
-  const comparison_groups_ = combine({ records: comparison_records_, active: comparison_group_ }, ({ records, active }) => {
-    const names = group_comparison_records(records).map((group) => group.name);
-    if (active && !names.includes(active)) names.push(active);
-    return names.map((name) => ({ name }));
+  const comparison_group_names_ = ref([default_comparison_group]);
+  const detection_rules_ = ref([]);
+  const detection_results_ = ref({});
+  const detection_feedback_ = ref("");
+  const detection_loading_ = ref("");
+  // JS 函数规则要用 chrome.userScripts 执行；Chrome 138 起用户还需在扩展详情页手动开启「允许用户脚本」。
+  // 页面加载时定一次：未开启时 chrome.userScripts 为 undefined，该类型的规则置灰。
+  const script_supported_ = ref(typeof client?.userScripts?.execute === "function");
+  // 分组清单以 comparison_group_names_ 为准（固定存在），仅补上记录里出现过的历史分组名，避免旧数据丢失归属。
+  const comparison_groups_ = combine({ names: comparison_group_names_, records: comparison_records_, active: comparison_group_ }, ({ names, records, active }) => {
+    const result = [...names];
+    const seen = new Set(result);
+    for (const group of group_comparison_records(records)) {
+      if (!seen.has(group.name)) { seen.add(group.name); result.push(group.name); }
+    }
+    if (active && !seen.has(active)) result.push(active);
+    return result.map((name) => ({ name }));
   });
   // 当前选中分组内的记录：弹窗列表、计数与「开始对比」可用性都以它为准。
   const comparison_current_ = combine({ records: comparison_records_, group: comparison_group_ }, ({ records, group }) => {
@@ -246,6 +284,7 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
   const domain_buttons = new Map();
   const group_buttons = new Map();
   const record_buttons = new Map();
+  const rule_buttons = new Map();
   const selected_cookies_ = combine({ cookies: cookies_, selected: selected_ }, ({ cookies, selected }) => cookies.filter((_, index) => selected.has(index)));
 
   async function refresh() {
@@ -299,6 +338,99 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
       parsers_message_.as("解析配置已保存");
     } catch (error) {
       parsers_message_.as(`保存失败：${error.message}`);
+    }
+  }
+
+  async function load_comparisons() {
+    try {
+      const saved = await client.storage.local.get([comparison_records_key, comparison_group_key, comparison_groups_key]);
+      const records = Array.isArray(saved?.[comparison_records_key]) ? saved[comparison_records_key] : [];
+      comparison_records_.as(records);
+      if (typeof saved?.[comparison_group_key] === "string" && saved[comparison_group_key].trim()) {
+        comparison_group_.as(saved[comparison_group_key].trim());
+      }
+      const stored = normalize_group_names(saved?.[comparison_groups_key]);
+      const names = [...stored];
+      // 旧数据只有分组名（记录里的 group 字段），没有分组清单：把它们登记为固定分组。
+      for (const group of group_comparison_records(records)) {
+        if (!names.includes(group.name)) names.push(group.name);
+      }
+      if (!names.length) names.push(default_comparison_group);
+      comparison_group_names_.as(names);
+      if (names.length !== stored.length) await client.storage.local.set({ [comparison_groups_key]: names });
+    } catch (error) {
+      savepage_feedback_.as(`读取暂存记录失败：${error.message}`);
+    }
+  }
+
+  async function load_detection_rules() {
+    try {
+      const saved = await client.storage.local.get(detection_rules_key);
+      detection_rules_.as(normalize_detection_rules(saved?.[detection_rules_key]));
+    } catch (error) {
+      detection_rules_.as([]);
+      detection_feedback_.as(`读取变更检测规则失败：${error.message}`);
+    }
+  }
+
+  // 颜色 / 内容规则：注入自包含求值函数到页面主世界。
+  async function run_page_rule(rule, tab_id) {
+    const injected = await client.scripting.executeScript({ target: { tabId: tab_id }, func: evaluate_detection_rule, args: [rule] });
+    const result = injected?.[0]?.result;
+    if (!result || typeof result !== "object") throw new Error("未获取到检测结果");
+    return result;
+  }
+
+  // 写回列表对比规则的基线（首次检测时注入代码回传 snapshot）：校验 → 读改写 detection_rules_ 与 storage。
+  // 返回错误文案；成功返回空串。写法与 remove_detection_rule 一致。
+  async function record_baseline(id, snapshot) {
+    const checked = read_baseline(snapshot);
+    if (checked.error) return checked.error;
+    const rules = detection_rules_.value.map((rule) => rule.id === id ? { ...rule, baseline: checked.baseline } : rule);
+    try {
+      await client.storage.local.set({ [detection_rules_key]: rules });
+      detection_rules_.as(rules);
+      return "";
+    } catch (error) {
+      return error.message;
+    }
+  }
+
+  // 用户脚本规则（JS 函数 / 列表对比）：用 userScripts 在 USER_SCRIPT 世界执行宿主生成的代码。
+  // 宿主只嵌选择器与用户函数体，内容一律运行时现取；同 group_id 的 JS 函数规则按 created_at 编号，
+  // 编号即函数里 others 的键（与预览页画出的框号一致）。
+  // 用户代码的语法错误会让整段脚本解析失败，try/catch 兜不住 —— 那时拿到的 InjectionResult.error
+  // 在这里统一转成带 error 标记的同形结果。
+  async function run_user_rule(rule, tab_id) {
+    try {
+      if (!script_supported_.value) throw new Error("当前浏览器未开启「允许用户脚本」，无法执行该规则");
+      const code = rule.type === "list"
+        ? build_list_code(rule)
+        : build_script_code(rule, number_rules(detection_rules_.value, rule));
+      const injected = await client.userScripts.execute({ target: { tabId: tab_id }, js: [{ code }] });
+      const entry = injected?.[0];
+      if (entry?.error) throw new Error(`注入失败：${entry.error}`);
+      const result = entry?.result;
+      if (!result || typeof result !== "object") throw new Error("未获取到检测结果");
+      // 首次检测：注入代码回传 snapshot，由宿主写进规则的 baseline 后丢弃（UI 不持有大对象）。
+      if (result.baseline === true && rule.type === "list") {
+        const snapshot = result.snapshot;
+        delete result.snapshot;
+        const error = await record_baseline(rule.id, snapshot);
+        if (error) { result.error = true; result.message = `基线写入失败：${error}`; }
+      }
+      return result;
+    } catch (error) {
+      return { found: false, passed: false, kind: rule.type, actual: "", message: error.message, error: true };
+    }
+  }
+
+  async function save_group_names(names) {
+    comparison_group_names_.as(names);
+    try {
+      await client.storage.local.set({ [comparison_groups_key]: names });
+    } catch (error) {
+      savepage_feedback_.as(`分组保存失败：${error.message}`);
     }
   }
 
@@ -404,7 +536,7 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
       }
     },
     navigate(page) {
-      if (!["cookie", "settings", "savepage"].includes(page) || page === page_.value) return;
+      if (!["cookie", "settings", "savepage", "detect"].includes(page) || page === page_.value) return;
       navigated = true;
       clearTimeout(page_transition_timer);
       leaving_page_.as(page_.value);
@@ -416,15 +548,11 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
       client.storage.onChanged.addListener(on_storage_changed);
       await Promise.all([
         client.storage.local.get("popup-page").then((saved) => {
-          if (!navigated && ["cookie", "settings", "savepage"].includes(saved["popup-page"])) page_.as(saved["popup-page"]);
+          if (!navigated && ["cookie", "settings", "savepage", "detect"].includes(saved["popup-page"])) page_.as(saved["popup-page"]);
         }).catch((error) => message_.as(error.message)),
         load_parsers(),
-        client.storage.local.get(comparison_records_key).then((saved) => {
-          comparison_records_.as(Array.isArray(saved[comparison_records_key]) ? saved[comparison_records_key] : []);
-        }).catch((error) => savepage_feedback_.as(`读取暂存记录失败：${error.message}`)),
-        client.storage.local.get(comparison_group_key).then((saved) => {
-          if (typeof saved[comparison_group_key] === "string" && saved[comparison_group_key]) comparison_group_.as(saved[comparison_group_key]);
-        }).catch(() => {}),
+        load_comparisons(),
+        load_detection_rules(),
         refresh(),
         send("get").catch((error) => message_.as(error.message)),
       ]);
@@ -513,10 +641,32 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
       client.storage.local.set({ [comparison_group_key]: name }).catch(() => {});
     },
     add_group() {
-      const names = new Set(comparison_groups_.value.map((group) => group.name));
+      const names = new Set(comparison_group_names_.value);
       let index = 1;
       while (names.has(`分组 ${index}`)) index += 1;
-      methods.select_group(`分组 ${index}`);
+      const name = `分组 ${index}`;
+      save_group_names([...comparison_group_names_.value, name]);
+      methods.select_group(name);
+    },
+    async remove_group(name) {
+      const names = comparison_group_names_.value;
+      if (names.length <= 1) return savepage_feedback_.as("至少保留一个分组");
+      if (!names.includes(name)) return;
+      if (!confirm_remove(`删除分组「${name}」及其全部暂存记录？`)) return;
+      const next = names.filter((item) => item !== name);
+      const records = comparison_records_.value.filter((record) => (typeof record.group === "string" && record.group.trim() ? record.group : default_comparison_group) !== name);
+      try {
+        await client.storage.local.set({ [comparison_groups_key]: next });
+        if (records.length) await client.storage.local.set({ [comparison_records_key]: records });
+        else await client.storage.local.remove(comparison_records_key);
+        comparison_group_names_.as(next);
+        comparison_records_.as(records);
+        group_buttons.delete(name);
+        if (comparison_group_.value === name) methods.select_group(next[0]);
+        savepage_feedback_.as(`已删除分组「${name}」`);
+      } catch (error) {
+        savepage_feedback_.as(`删除分组失败：${error.message}`);
+      }
     },
     async stage_page() {
       if (!page_html_.value) return savepage_feedback_.as("没有可暂存的页面内容");
@@ -561,6 +711,45 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
         savepage_feedback_.as(`已删除：${record.title}`);
       } catch (error) {
         savepage_feedback_.as(`删除失败：${error.message}`);
+      }
+    },
+    // 变更检测：规则按来源 hostname 限定，只有当前标签页同源才注入求值。
+    async detect_rule(id) {
+      if (detection_loading_.value) return;
+      const rule = detection_rules_.value.find((item) => item.id === id);
+      if (!rule) return;
+      detection_loading_.as(id);
+      try {
+        const [tab] = await client.tabs.query({ active: true, currentWindow: true });
+        if (!tab?.id || !/^https?:\/\//i.test(tab.url || "")) throw new Error("当前页面不支持变更检测");
+        const host = hostname_of(tab.url);
+        // hostname 不符时短路返回原因，不注入。
+        if (!host || host !== rule.hostname) throw new Error(`规则来自 ${rule.hostname || "未知来源"}，与当前页面 ${host || "未知地址"} 不一致`);
+        const result = USER_SCRIPT_TYPES.has(rule.type) ? await run_user_rule(rule, tab.id) : await run_page_rule(rule, tab.id);
+        detection_results_.as({ ...detection_results_.value, [id]: result });
+        detection_feedback_.as(`${rule.name}：${result.message}`);
+      } catch (error) {
+        detection_results_.as({ ...detection_results_.value, [id]: { found: false, passed: false, kind: rule.type, actual: "", message: error.message } });
+        detection_feedback_.as(error.message);
+      } finally {
+        detection_loading_.as("");
+      }
+    },
+    async remove_detection_rule(id) {
+      const rule = detection_rules_.value.find((item) => item.id === id);
+      if (!rule) return;
+      if (!confirm_remove(`删除变更检测规则「${rule.name}」？`)) return;
+      const rules = detection_rules_.value.filter((item) => item.id !== id);
+      try {
+        await client.storage.local.set({ [detection_rules_key]: rules });
+        detection_rules_.as(rules);
+        rule_buttons.delete(id);
+        const results = { ...detection_results_.value };
+        delete results[id];
+        detection_results_.as(results);
+        detection_feedback_.as(`已删除：${rule.name}`);
+      } catch (error) {
+        detection_feedback_.as(`删除失败：${error.message}`);
       }
     },
     async preview_record(id) {
@@ -618,7 +807,7 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
       can_remove: combine({ profiles: profiles_, saved: saved_profiles_, active: active_profile_ }, (s) => s.profiles.length > 1 && (s.saved.length > 1 || !s.saved.some((profile) => profile.id === s.active))),
       page: page_,
       leaving_page: leaving_page_,
-      title: computed(page_, (page) => page === "cookie" ? "Cookie" : page === "settings" ? "设置" : "对比"),
+      title: computed(page_, (page) => PAGE_TITLES[page] || "Cookie"),
       version: ref(manifest.version_name || `v${manifest.version}`),
       cookies: cookies_, selected: selected_, settings: settings_, status: status_,
       url: url_, page_domain: page_domain_, message: message_, loading: loading_, busy: busy_,
@@ -645,9 +834,26 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
       comparison_records: comparison_records_,
       comparison_groups: comparison_groups_,
       comparison_group: comparison_group_,
+      can_remove_group: computed(comparison_groups_, (groups) => groups.length > 1),
       comparison_current_records: computed(comparison_current_, (records) => records.map((record, index) => ({ ...record, index }))),
       comparison_count: computed(comparison_current_, (records) => records.length),
       comparison_ready: computed(comparison_current_, (records) => records.length >= 2),
+      detection_rules: detection_rules_,
+      detection_results: detection_results_,
+      detection_feedback: detection_feedback_,
+      detection_loading: detection_loading_,
+      script_supported: script_supported_,
+      // 每条规则附上「当前页面能否检测」与原因：规则按其来源 hostname 限定，
+      // 用户脚本规则（JS 函数 / 列表对比）还要求当前浏览器已开启「允许用户脚本」。
+      detection_rows: combine({ rules: detection_rules_, host: page_domain_, script_supported: script_supported_ }, ({ rules, host, script_supported }) => rules.map((rule) => {
+        const source_ok = Boolean(host) && Boolean(rule.hostname) && host === rule.hostname;
+        const detectable = source_ok && (!USER_SCRIPT_TYPES.has(rule.type) || script_supported);
+        const reason = detectable ? ""
+          : !source_ok ? (host ? `规则来自 ${rule.hostname || "未知来源"}，与当前页面 ${host} 不一致` : "当前页面不是 HTTP(S) 页面")
+          : "需在扩展详情页开启「允许用户脚本」";
+        return { ...rule, condition: describe_rule(rule), shape_label: describe_shape(rule), detectable, reason };
+      })),
+      detection_count: computed(detection_rules_, (rules) => rules.length),
   };
   const ui = {
     domain_copy_button(domain) {
@@ -659,7 +865,15 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
       return profile_buttons.get(id);
     },
     group_button(name) {
-      if (!group_buttons.has(name)) group_buttons.set(name, new vm.ButtonCore({ variant: "ghost", size: "sm", onClick: () => methods.select_group(name) }));
+      if (!group_buttons.has(name)) {
+        const tab = new vm.ButtonCore({ variant: "ghost", size: "sm", onClick: () => methods.select_group(name) });
+        const remove = new vm.ButtonCore({ variant: "ghost", size: "sm", onClick: () => methods.remove_group(name) });
+        // 至少保留一个分组：只剩一个时删除按钮置灰。
+        const update = () => state.can_remove_group.value ? remove.enable() : remove.disable();
+        state.can_remove_group.subscribe({ onChange: update });
+        update();
+        group_buttons.set(name, { tab, remove });
+      }
       return group_buttons.get(name);
     },
     record_button(id) {
@@ -668,6 +882,22 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
         remove: new vm.ButtonCore({ variant: "ghost", size: "sm", onClick: () => methods.remove_record(id) }),
       });
       return record_buttons.get(id);
+    },
+    rule_button(id) {
+      if (!rule_buttons.has(id)) {
+        const detect = new vm.ButtonCore({ variant: "outline", size: "sm", onClick: () => methods.detect_rule(id) });
+        const remove = new vm.ButtonCore({ variant: "ghost", size: "sm", onClick: () => methods.remove_detection_rule(id) });
+        // 检测按钮的可用性：规则在当前页面不可检测、或已有检测在跑时置灰。
+        const update = (disabled) => disabled ? detect.disable() : detect.enable();
+        const source = combine({ rows: state.detection_rows, loading: detection_loading_ }, ({ rows, loading }) => {
+          const row = rows.find((item) => item.id === id);
+          return !row || !row.detectable || Boolean(loading);
+        });
+        update(source.value);
+        source.subscribe({ onChange: update });
+        rule_buttons.set(id, { detect, remove });
+      }
+      return rule_buttons.get(id);
     },
     domains$: new vm.ArrayFieldCore({
       label: "域名列表",
@@ -708,6 +938,7 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
     menu: [
       { name: "cookie", title: "Cookie", icon: "file-lock" },
       { name: "savepage", title: "对比", icon: "file-code" },
+      { name: "detect", title: "变更检测", icon: "radio-tower" },
       { name: "settings", title: "设置", icon: "settings" },
     ].map((item) => ({ ...item, button$: new vm.ButtonCore({ variant: "ghost", onClick: () => methods.navigate(item.name) }) })),
     refresh$: new vm.ButtonCore({ variant: "outline", size: "sm", onClick: refresh }),

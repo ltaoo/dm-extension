@@ -2,16 +2,23 @@
 <main class="preview-root" data-n="preview-root" aria-label="暂存页面预览"></main>
 <script data-n="test-stub">
   // preview.js 顶层调用 ComparisonModel()（默认参数取全局 chrome），渲染前先桩掉 storage。
+  // 直接以「存储」当写入记录：先读后写的保存路径能读到上一次写进去的规则。
+  const store = {
+    "comparison-records": [
+      { id: "1", group: "分组 1", title: "A", url: "https://a.test/", html: '<html><head><meta http-equiv="Content-Security-Policy" content="default-src none"></head><body><main><p>预览内容</p></main><div id="extra">补充说明</div><ul id="list"><li><span>苹果</span><span>¥3</span></li><li><span>香蕉</span><span>¥5</span></li></ul><div id="spacer" style="height: 1500px"></div></body></html>', created_at: 1 },
+      { id: "2", group: "分组 1", title: "B", url: "https://b.test/", html: "<html><body><p>乙</p></body></html>", created_at: 2 },
+    ],
+    "comparison-group": "分组 1",
+  };
+  globalThis.__storage_writes = store;
   globalThis.chrome = {
     storage: {
       local: {
-        get: async () => ({
-          "comparison-records": [
-            { id: "1", group: "分组 1", title: "A", url: "https://a.test/", html: '<html><head><meta http-equiv="Content-Security-Policy" content="default-src none"></head><body><main><p>预览内容</p></main></body></html>', created_at: 1 },
-            { id: "2", group: "分组 1", title: "B", url: "https://b.test/", html: "<html><body><p>乙</p></body></html>", created_at: 2 },
-          ],
-          "comparison-group": "分组 1",
-        }),
+        get: async (keys) => {
+          const wanted = Array.isArray(keys) ? keys : [keys];
+          return Object.fromEntries(wanted.filter(Boolean).map((key) => [key, store[key]]));
+        },
+        set: async (items) => { Object.assign(store, items); },
       },
     },
   };
@@ -40,5 +47,295 @@ if (!frame.srcdoc.includes("<p>预览内容</p>")) throw new Error("iframe 应�
 if (frame.srcdoc.includes("Content-Security-Policy")) throw new Error("预览应移除 CSP meta");
 if (!frame.srcdoc.includes('<base href="https://a.test/">')) throw new Error("预览应注入 base");
 if (frame.srcdoc.includes("[data-compare-")) throw new Error("预览不应注入对比样式");
+
+// —— 框选 → 规则 ——
+
+// srcdoc 导航是异步的：内容就绪后再进入框选模式。
+await new Promise((resolve) => {
+  const started = Date.now();
+  const check = () => {
+    const inner = frame.contentDocument;
+    if ((inner && inner.querySelector("p")) || Date.now() - started > 5000) resolve();
+    else setTimeout(check, 50);
+  };
+  check();
+});
+const inner_doc = frame.contentDocument;
+if (!inner_doc || !inner_doc.querySelector("p")) throw new Error("iframe 文档应可访问（allow-same-origin）");
+
+const toggle = document.querySelector('[data-n="preview-select-toggle"]');
+if (!toggle) throw new Error("预览页应有框选开关");
+if (toggle.getAttribute("aria-pressed") !== "false") throw new Error("框选开关初始应为未按下");
+const srcdoc_before = frame.srcdoc;
+toggle.click();
+if (toggle.getAttribute("aria-pressed") !== "true") throw new Error("点击后应进入框选模式");
+if (toggle.textContent !== "退出框选") throw new Error("框选模式应显示退出文案");
+if (frame.srcdoc !== srcdoc_before) throw new Error("进入框选不应改动 iframe 的 srcdoc");
+if (document.querySelector('[data-n="preview-select-overlay"]').hidden) throw new Error("框选模式应显示遮罩");
+
+// 在 iframe 内造一次框选：坐标全程用 iframe 视口坐标。
+const target = inner_doc.querySelector("p");
+const box = target.getBoundingClientRect();
+const fire = (type, x, y) => {
+  target.dispatchEvent(new inner_doc.defaultView.MouseEvent(type, { bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0 }));
+};
+fire("mousedown", box.left + 1, box.top + 1);
+fire("mousemove", box.right - 1, box.bottom - 1);
+fire("mouseup", box.right - 1, box.bottom - 1);
+await new Promise((resolve) => setTimeout(resolve, 100));
+
+const panel = document.querySelector('[data-n="preview-rule-panel"]');
+if (!panel || panel.hidden) throw new Error("框选后应出现规则面板");
+if (document.querySelector('[data-n="preview-select-container"]').hidden) throw new Error("应画出识别到的容器轮廓");
+const name_input = document.querySelector('[data-n="preview-rule-name"]');
+const type_select = document.querySelector('[data-n="preview-rule-type"]');
+const expected_input = document.querySelector('[data-n="preview-rule-expected"]');
+if (name_input.value !== "A - p") throw new Error(`规则名应预填记录的容器：${name_input.value}`);
+if (!type_select.value || !expected_input.value.startsWith("rgb")) throw new Error(`颜色期望值应预填计算颜色：${expected_input.value}`);
+
+// —— 操作栏：沿祖先链切换容器（父容器 / 子容器）——
+const bar = document.querySelector('[data-n="preview-select-bar"]');
+const bar_label = document.querySelector('[data-n="preview-select-bar-label"]');
+const parent_button = document.querySelector('[data-n="preview-select-parent"]');
+const child_button = document.querySelector('[data-n="preview-select-child"]');
+if (!bar || bar.hidden) throw new Error("框选后应出现操作栏");
+if (bar_label.textContent !== "p") throw new Error(`操作栏应显示识别到的容器：${bar_label.textContent}`);
+if (!child_button.disabled) throw new Error("已在最深节点时「子容器」应禁用");
+parent_button.click();
+if (bar_label.textContent !== "main" || name_input.value !== "A - main") throw new Error(`点「父容器」应切换到父节点：${bar_label.textContent} / ${name_input.value}`);
+if (child_button.disabled) throw new Error("回到父节点后「子容器」应可用");
+parent_button.click();
+if (bar_label.textContent !== "body" || !parent_button.disabled) throw new Error(`再点「父容器」应到 body 且不可再上：${bar_label.textContent}`);
+child_button.click();
+child_button.click();
+if (bar_label.textContent !== "p" || !child_button.disabled) throw new Error(`点「子容器」应逐级退回：${bar_label.textContent}`);
+if (name_input.value !== "A - p") throw new Error(`退回后规则名应还原：${name_input.value}`);
+
+// 切换为内容规则 → 期望值换成折叠空白后的文本。
+type_select.value = "content";
+type_select.dispatchEvent(new Event("change", { bubbles: true }));
+if (expected_input.value !== "预览内容") throw new Error(`内容期望值应预填文本：${expected_input.value}`);
+name_input.value = "内容规则";
+document.querySelector('[data-n="preview-rule-save"]').click();
+await new Promise((resolve) => setTimeout(resolve, 150));
+
+const rules = globalThis.__storage_writes["detection-rules"];
+if (!Array.isArray(rules) || rules.length !== 1) throw new Error(`保存应写入 1 条变更检测规则：${JSON.stringify(rules)}`);
+const rule = rules[0];
+if (rule.name !== "内容规则" || rule.type !== "content" || rule.expected !== "预览内容") throw new Error(`规则内容错误：${JSON.stringify(rule)}`);
+if (rule.hostname !== "a.test" || rule.source_record_id !== "1") throw new Error(`规则应记录来源：${JSON.stringify(rule)}`);
+if (inner_doc.querySelector(rule.selector) !== target) throw new Error(`规则选择器应在预览文档中命中：${rule.selector}`);
+if (!document.querySelector('[data-n="preview-rule-feedback"]').textContent.includes("已保存")) throw new Error("保存后应有反馈");
+if (frame.srcdoc !== srcdoc_before) throw new Error("框选与保存全程都不应改动 iframe 的 srcdoc");
+// 保存后该框画上编号「1」（编号 = 本次预览里规则按 created_at 的次序，与函数里 others 的键一致）。
+if (!rule.group_id) throw new Error("规则应带 group_id（同一次预览同属一组）");
+if (rule.shape !== "detail" || rule.item_count !== 0) throw new Error(`规则应带形态：${rule.shape}/${rule.item_count}`);
+const saved_labels = () => Array.from(document.querySelectorAll('[data-n="preview-select-saved-label"]')).map((node) => node.textContent);
+if (saved_labels().join(",") !== "1") throw new Error(`第一个框应标号 1：${saved_labels().join(",")}`);
+
+// —— 连续框选：再框一个块，切到 JS 函数类型 ——
+const extra = inner_doc.querySelector("#extra");
+const extra_box = extra.getBoundingClientRect();
+const fire_on = (element, type, x, y) => {
+  element.dispatchEvent(new inner_doc.defaultView.MouseEvent(type, { bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0 }));
+};
+fire_on(extra, "mousedown", extra_box.left + 1, extra_box.top + 1);
+fire_on(extra, "mousemove", extra_box.right - 1, extra_box.bottom - 1);
+fire_on(extra, "mouseup", extra_box.right - 1, extra_box.bottom - 1);
+await new Promise((resolve) => setTimeout(resolve, 100));
+
+const code_input = document.querySelector('[data-n="preview-rule-code"]');
+const code_field = code_input.closest("label");
+const shape_badge = document.querySelector('[data-n="preview-rule-shape"]');
+if (code_input.value) throw new Error("非 script 类型不应预填函数体");
+if (code_field.hidden !== true) throw new Error("颜色 / 内容类型应隐藏函数体输入");
+if (expected_input.closest("label").hidden) throw new Error("颜色 / 内容类型应显示期望值输入");
+if (shape_badge.hidden || shape_badge.textContent !== "详情") throw new Error(`应提示框选形态：${shape_badge.textContent}`);
+if (document.querySelector('[data-n="preview-rule-name"]').value !== "A - div#extra") throw new Error(`规则名应预填新框的容器：${document.querySelector('[data-n="preview-rule-name"]').value}`);
+
+type_select.value = "script";
+type_select.dispatchEvent(new Event("change", { bubbles: true }));
+if (code_field.hidden) throw new Error("切到 JS 函数应显示函数体输入");
+if (!expected_input.closest("label").hidden) throw new Error("切到 JS 函数应隐藏期望值输入");
+if (!code_input.value.includes("self.text")) throw new Error(`应预填可用模板：${code_input.value}`);
+code_input.value = 'return self.text.includes("预览内容");';
+document.querySelector('[data-n="preview-rule-name"]').value = "函数规则";
+document.querySelector('[data-n="preview-rule-save"]').click();
+await new Promise((resolve) => setTimeout(resolve, 150));
+
+const saved_rules = globalThis.__storage_writes["detection-rules"];
+if (saved_rules.length !== 2) throw new Error(`连续框选应逐框保存两条规则：${JSON.stringify(saved_rules)}`);
+const script_rule = saved_rules[1];
+if (script_rule.name !== "函数规则" || script_rule.type !== "script") throw new Error(`第二条应为 JS 函数规则：${JSON.stringify(script_rule)}`);
+if (script_rule.code !== 'return self.text.includes("预览内容");') throw new Error(`应原样保存函数体：${script_rule.code}`);
+if (script_rule.expected !== "" || script_rule.item_count !== 0) throw new Error(`JS 规则不应带期望值：${JSON.stringify(script_rule)}`);
+if (script_rule.group_id !== rule.group_id) throw new Error(`同一次预览的规则应同属一组：${script_rule.group_id}/${rule.group_id}`);
+if (inner_doc.querySelector(script_rule.selector) !== extra) throw new Error(`第二条规则应指向新框：${script_rule.selector}`);
+if (saved_labels().join(",") !== "1,2") throw new Error(`第二个框应标号 2：${saved_labels().join(",")}`);
+if (frame.srcdoc !== srcdoc_before) throw new Error("连续框选全程都不应改动 iframe 的 srcdoc");
+
+// 退出框选：撤掉遮罩与面板、清空编号与草稿。
+toggle.click();
+if (toggle.getAttribute("aria-pressed") !== "false" || toggle.textContent !== "框选") throw new Error("再次点击应退出框选");
+if (!document.querySelector('[data-n="preview-select-overlay"]').hidden || !panel.hidden) throw new Error("退出框选应隐藏遮罩与面板");
+if (!bar.hidden) throw new Error("退出框选应隐藏操作栏");
+if (saved_labels().length !== 0) throw new Error("退出框选应清空编号");
+// 重新进入：按 created_at 重绘本组已保存的规则，编号与函数里 others 的键一致。
+toggle.click();
+if (saved_labels().join(",") !== "1,2") throw new Error(`重新进入框选应按编号重绘：${saved_labels().join(",")}`);
+toggle.click();
+if (saved_labels().length !== 0) throw new Error("退出框选应清空编号");
+if (code_input.value) throw new Error("退出框选应清空函数体草稿");
+
+// —— 列表对比：与 JS 函数共用函数体输入，保存时带 code、无 expected、baseline 为 null ——
+toggle.click();
+const list_el = inner_doc.querySelector("#list");
+const list_box = list_el.getBoundingClientRect();
+fire_on(list_el, "mousedown", list_box.left + 1, list_box.top + 1);
+fire_on(list_el, "mousemove", list_box.right - 1, list_box.bottom - 1);
+fire_on(list_el, "mouseup", list_box.right - 1, list_box.bottom - 1);
+await new Promise((resolve) => setTimeout(resolve, 100));
+
+if (shape_badge.hidden || shape_badge.textContent !== "列表 · 2 项") throw new Error(`应提示列表形态：${shape_badge.textContent}`);
+type_select.value = "list";
+type_select.dispatchEvent(new Event("change", { bubbles: true }));
+if (code_field.hidden) throw new Error("切到列表对比应显示函数体输入");
+if (!expected_input.closest("label").hidden) throw new Error("切到列表对比应隐藏期望值输入");
+if (!code_input.value.includes("self.items")) throw new Error(`列表对比应预填取键模板：${code_input.value}`);
+if (!document.querySelector('[data-n="preview-rule-hint"]').textContent.includes("键")) throw new Error("列表对比应给出取键提示");
+
+// 两种写函数的类型各留一份草稿：切到 JS 函数再切回来，列表对比写的内容不丢。
+const list_code = 'var result = {}; for (var i = 0; i < self.items.length; i += 1) { result[self.items[i].items[0].text] = { price: self.items[i].items[1].text }; } return result;';
+code_input.value = list_code;
+type_select.value = "script";
+type_select.dispatchEvent(new Event("change", { bubbles: true }));
+if (!code_input.value.includes("self.text")) throw new Error(`切到 JS 函数应预填脚本模板：${code_input.value}`);
+type_select.value = "list";
+type_select.dispatchEvent(new Event("change", { bubbles: true }));
+if (code_input.value !== list_code) throw new Error(`切回列表对比应保留草稿：${code_input.value}`);
+
+document.querySelector('[data-n="preview-rule-name"]').value = "列表规则";
+document.querySelector('[data-n="preview-rule-save"]').click();
+await new Promise((resolve) => setTimeout(resolve, 150));
+
+const all_rules = globalThis.__storage_writes["detection-rules"];
+if (all_rules.length !== 3) throw new Error(`连续框选应保存三条规则：${JSON.stringify(all_rules)}`);
+const list_rule = all_rules[2];
+if (list_rule.type !== "list" || list_rule.name !== "列表规则") throw new Error(`第三条应为列表对比规则：${JSON.stringify(list_rule)}`);
+if (list_rule.code !== list_code) throw new Error(`应原样保存取键函数体：${list_rule.code}`);
+if (list_rule.expected !== "" || list_rule.baseline !== null) throw new Error(`列表规则应无期望值、基线为 null：${JSON.stringify(list_rule)}`);
+if (inner_doc.querySelector(list_rule.selector) !== list_el) throw new Error(`第三条规则应指向列表容器：${list_rule.selector}`);
+if (saved_labels().join(",") !== "1,2,3") throw new Error(`第三个框应标号 3：${saved_labels().join(",")}`);
+if (frame.srcdoc !== srcdoc_before) throw new Error("列表对比全程都不应改动 iframe 的 srcdoc");
+
+// —— 滚动跟随：预览文档滚动时，框 / 轮廓 / 操作栏都跟着内容走 ——
+
+// 保存后待保存的选区已被编号框取代：重新框一个块。
+const follow_target = inner_doc.querySelector("#list");
+const follow_box = follow_target.getBoundingClientRect();
+fire_on(follow_target, "mousedown", follow_box.left + 1, follow_box.top + 1);
+fire_on(follow_target, "mousemove", follow_box.right - 1, follow_box.bottom - 1);
+fire_on(follow_target, "mouseup", follow_box.right - 1, follow_box.bottom - 1);
+await new Promise((resolve) => setTimeout(resolve, 120));
+
+const outline_el = document.querySelector('[data-n="preview-select-container"]');
+const sel_box_el = document.querySelector('[data-n="preview-select-box"]');
+const follow_bar = document.querySelector('[data-n="preview-select-bar"]');
+// 框与轮廓都收到识别到的容器上，而不是鼠标拉出的那个矩形。
+if (Math.abs(sel_box_el.getBoundingClientRect().top - outline_el.getBoundingClientRect().top) > 1) {
+  throw new Error("框应收到识别到的容器上");
+}
+const outline_top = outline_el.getBoundingClientRect().top;
+const follow_bar_top = follow_bar.getBoundingClientRect().top;
+// 只滚 40px：容器仍稳稳在视口上部，操作栏不会翻到容器下方（翻面是另一条路径，不在这里断言）。
+inner_doc.defaultView.scrollTo(0, 40);
+await new Promise((resolve) => setTimeout(resolve, 150));
+
+const shift = outline_el.getBoundingClientRect().top - outline_top;
+if (Math.abs(shift + 40) > 2) throw new Error(`滚动 40px 后轮廓应跟随内容上移，实际位移 ${shift}`);
+const bar_shift = follow_bar.getBoundingClientRect().top - follow_bar_top;
+if (follow_bar.hidden) throw new Error("容器仍在视口内时操作栏不应隐藏");
+if (Math.abs(bar_shift + 40) > 2) throw new Error(`滚动 40px 后操作栏应跟随内容上移，实际位移 ${bar_shift}`);
+
+inner_doc.defaultView.scrollTo(0, 0);
+await new Promise((resolve) => setTimeout(resolve, 150));
+if (Math.abs(outline_el.getBoundingClientRect().top - outline_top) > 2) throw new Error("滚回顶部后轮廓应复位");
+
+// —— 提取测试：一份完整 HTML → JS 提取函数 → 输出可视化 ——
+
+// 提取函数在沙箱页里跑，来回是 postMessage：状态串先清空再点，免得读到上一次的残留。
+const extract_status_el = document.querySelector('[data-n="preview-extract-status"]');
+const extract_output = document.querySelector('[data-n="preview-extract-output"]');
+const run_extract = async () => {
+  extract_status_el.textContent = "";
+  document.querySelector('[data-n="preview-extract-run"]').click();
+  const started = Date.now();
+  for (;;) {
+    const text = extract_status_el.textContent;
+    if (text && text !== "运行中…") return text;
+    if (Date.now() - started > 10000) throw new Error(`提取测试未返回：${text}`);
+    await new Promise((resolve) => setTimeout(resolve, 60));
+  }
+};
+const extract_json = () => extract_output.querySelector('[data-n="preview-extract-json"]');
+
+const extract_toggle = document.querySelector('[data-n="preview-extract-toggle"]');
+const extract_panel = document.querySelector('[data-n="preview-extract"]');
+const extract_source = document.querySelector('[data-n="preview-extract-source"]');
+const extract_code = document.querySelector('[data-n="preview-extract-code"]');
+if (!extract_toggle || !extract_panel) throw new Error("预览页应有提取测试面板");
+if (!extract_panel.hidden) throw new Error("提取测试面板初始应收起");
+if (!document.querySelector('[data-n="preview-extract-hint"]').textContent.includes("document")) throw new Error("应说明函数体拿到的入参");
+extract_toggle.click();
+if (extract_panel.hidden || extract_toggle.getAttribute("aria-pressed") !== "true") throw new Error("点击后应展开提取测试面板");
+if (!extract_code.value.includes("return")) throw new Error(`函数体应预填可用模板：${extract_code.value}`);
+
+// 入参预览：默认显示整页 HTML 源码。
+const extract_html_view = document.querySelector('[data-n="preview-extract-html"]');
+const extract_source_note = document.querySelector('[data-n="preview-extract-source-note"]');
+const set_extract_source = (value) => {
+  extract_source.value = value;
+  extract_source.dispatchEvent(new Event("change", { bubbles: true }));
+};
+if (extract_source.value !== "page") throw new Error(`数据源应默认是整页 HTML：${extract_source.value}`);
+if (!extract_html_view.textContent.includes('<div id="spacer"')) throw new Error(`默认应显示整页 HTML 源码：${extract_html_view.textContent.slice(0, 80)}`);
+if (!extract_html_view.textContent.includes("<p>预览内容</p>")) throw new Error("整页源码应含记录内容");
+if (!extract_source_note.textContent.includes("整页 HTML")) throw new Error(`应标注数据源与字符数：${extract_source_note.textContent}`);
+
+// 切到「框选容器」：入参预览换成该容器的 outerHTML，整页里的其他内容不再出现。
+set_extract_source("selection");
+if (extract_html_view.textContent.includes('id="spacer"')) throw new Error("框选容器不应再显示整页的其它内容");
+if (extract_html_view.textContent !== inner_doc.querySelector("#list").outerHTML) throw new Error(`应显示框选容器的 outerHTML：${extract_html_view.textContent}`);
+if (!extract_source_note.textContent.includes("框选容器")) throw new Error(`应标注数据源为框选容器：${extract_source_note.textContent}`);
+
+// 数据源 = 整页 HTML：从一份完整 html 里取出列表，输出既给 JSON 也给表格。
+set_extract_source("page");
+extract_code.value = 'return Array.from(document.querySelectorAll("#list li")).map((li) => { const cells = li.querySelectorAll("span"); return { 名称: cells[0].textContent, 价格: cells[1].textContent }; });';
+const status_page = await run_extract();
+if (!status_page.includes("入参 整页 HTML")) throw new Error(`状态应说明入参：${status_page}`);
+if (!status_page.includes("行为") || !status_page.includes("输出")) throw new Error(`状态应说明行为与输出：${status_page}`);
+const page_json = extract_json();
+if (!page_json) throw new Error("应渲染输出 JSON");
+const page_value = JSON.parse(page_json.textContent);
+if (page_value.length !== 2 || page_value[0].名称 !== "苹果" || page_value[1].价格 !== "¥5") throw new Error(`提取结果不对：${page_json.textContent}`);
+const page_table = extract_output.querySelector('[data-n="preview-extract-table"]');
+if (!page_table) throw new Error("对象数组应额外渲染成表格");
+if (Array.from(page_table.querySelectorAll("th")).map((th) => th.textContent).join(",") !== "名称,价格") throw new Error("表头应为对象键");
+if (page_table.querySelectorAll("tr").length !== 3) throw new Error(`表格应为表头 + 2 行数据：${page_table.querySelectorAll("tr").length}`);
+
+// 数据源 = 框选容器：上面最后一次框选留下的是 #list，只测这一块。
+set_extract_source("selection");
+extract_code.value = 'return document.querySelectorAll("li").length;';
+const status_selection = await run_extract();
+if (!status_selection.includes("入参 框选容器")) throw new Error(`状态应说明数据源是框选容器：${status_selection}`);
+if (extract_json().textContent !== "2") throw new Error(`框选容器应解析出 2 个 li：${extract_json().textContent}`);
+
+// 出错要报错：函数体语法错误不该静默失败，也不该留下旧输出。
+extract_code.value = "return (";
+const status_error = await run_extract();
+if (!status_error.startsWith("执行出错")) throw new Error(`语法错误应报错：${status_error}`);
+if (extract_status_el.classList.contains("is-error") !== true) throw new Error("出错状态应有标记");
+if (extract_json()) throw new Error("出错时不应渲染输出");
+
 document.body.setAttribute("data-test-passed", "");
 </script></body></html>
