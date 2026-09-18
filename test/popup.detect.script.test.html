@@ -1,0 +1,212 @@
+<!doctype html><html data-n="test-document"><head data-n="test-head"><meta charset="utf-8">
+<link rel="stylesheet" href="../assets/vendor/src/dmui.css" data-n="component-style" />
+<link rel="stylesheet" href="../src/popup/popup.css" data-n="popup-style" />
+</head><body data-n="test-body">
+<div id="root" data-n="popup-root"></div>
+<script data-n="test-stub">
+  // popup.js / store.js 顶层取全局 chrome（getManifest 在模块加载时执行），必须先桩好。
+  const writes = {};
+  globalThis.__storage_writes = writes;
+  globalThis.confirm = () => true;
+  const script_calls = [];
+  globalThis.__script_calls = script_calls;
+  globalThis.chrome = {
+    runtime: {
+      getManifest: () => ({ version_name: "v260830", version: "26.8.30" }),
+      getURL: (path) => `chrome-extension://test/${path}`,
+      sendMessage: async () => ({ success: true, profiles: [{
+        id: "default", name: "默认", enabled: false, endpoint: "http://127.0.0.1:2022/api/cookies/update", intervalMinutes: 60,
+        encryption: { method: "none", uuid: "", password: "" }, domainFilter: { domains: [] },
+      }], statuses: {} }),
+    },
+    storage: {
+      local: {
+        get: async (keys) => {
+          const data = {
+            "popup-page": "detect",
+            "page-parsers": [],
+            // 两条同 group_id 的 JS 函数规则：编号 1 / 2，互相能按编号取到。
+            // 三条列表对比规则：l1 已记录基线（有变更）、l2 已记录基线（无变更）、l3 基线为 null（首次检测记录）。
+            "detection-rules": [
+              { id: "s1", name: "JS 甲", type: "script", code: 'return self.text.includes("甲");', selector: "#a", node: "div#a", hostname: "example.com", group_id: "g1", shape: "list", item_count: 2, source_url: "https://example.com/", source_record_id: "1", created_at: 1 },
+              { id: "s2", name: "JS 乙", type: "script", code: "return others[1].text !== self.text;", selector: "#b", node: "div#b", hostname: "example.com", group_id: "g1", shape: "detail", item_count: 0, source_url: "https://example.com/", source_record_id: "2", created_at: 2 },
+              { id: "l1", name: "列表甲", type: "list", code: 'var r = {}; r["苹果"] = { price: "¥3" }; return r;', selector: "#list", node: "ul#list", hostname: "example.com", group_id: "g2", shape: "list", item_count: 2, baseline: { "苹果": { price: "¥3" } }, source_url: "https://example.com/", source_record_id: "3", created_at: 3 },
+              { id: "l2", name: "列表乙", type: "list", code: "var r = {}; return r;", selector: "#list2", node: "ul#list2", hostname: "example.com", group_id: "g2", shape: "list", item_count: 2, baseline: { "苹果": { price: "¥3" } }, source_url: "https://example.com/", source_record_id: "4", created_at: 4 },
+              { id: "l3", name: "列表丙", type: "list", code: 'var r = {}; r["苹果"] = { price: "¥3" }; r["香蕉"] = { price: "¥5" }; return r;', selector: "#list3", node: "ul#list3", hostname: "example.com", group_id: "g3", shape: "list", item_count: 2, baseline: null, source_url: "https://example.com/", source_record_id: "5", created_at: 5 },
+            ],
+          };
+          const wanted = Array.isArray(keys) ? keys : [keys];
+          return Object.fromEntries(wanted.filter(Boolean).map((key) => [key, data[key]]));
+        },
+        set: async (items) => { Object.assign(writes, items); },
+        remove: async (key) => { writes[key] = undefined; },
+      },
+      onChanged: { addListener() {}, removeListener() {} },
+    },
+    tabs: {
+      query: async () => [{ id: 1, url: "https://example.com/", title: "示例" }],
+      create: async () => ({}),
+    },
+    cookies: { getAllCookieStores: async () => [{ id: "0", tabIds: [1] }], getAll: async () => [] },
+    scripting: {
+      // 只有脚本注入抓页面 HTML 走 scripting.executeScript；JS 函数规则一律走 userScripts。
+      executeScript: async ({ func }) => {
+        if (func?.name === "evaluate_detection_rule") throw new Error("JS 函数规则不应走 scripting.executeScript");
+        return [{ result: { title: "示例页面", url: "https://example.com/", parser: "generic", html: "<html><body><p>内容</p></body></html>", images: [], videos: [], files: [] } }];
+      },
+    },
+    // 记录注入的代码；按代码里的自身选择器分流返回，覆盖 is-pass / is-fail / is-baseline 与三行 diff。
+    userScripts: {
+      execute: async ({ target, js }) => {
+        const code = js[0].code;
+        script_calls.push({ target, code });
+        const match = /var self = read_content\("([^"]*)"\)/.exec(code);
+        const selector = match ? match[1] : "";
+        if (selector === "#list") {
+          return [{ result: {
+            found: true, passed: true, kind: "list",
+            actual: "新增 2 · 更新 1 · 删除 1（基线 2 项 → 当前 3 项）",
+            message: "有变更",
+            diff: { added: ["橙子", "葡萄"], updated: [{ key: "苹果", fields: ["price", "stock"] }], removed: ["香蕉"] },
+            counts: { added: 2, updated: 1, removed: 1 },
+            baseline_count: 2, current_count: 3,
+          } }];
+        }
+        if (selector === "#list2") {
+          return [{ result: {
+            found: true, passed: false, kind: "list",
+            actual: "新增 0 · 更新 0 · 删除 0（基线 1 项 → 当前 1 项）",
+            message: "无变更",
+            diff: { added: [], updated: [], removed: [] },
+            counts: { added: 0, updated: 0, removed: 0 },
+            baseline_count: 1, current_count: 1,
+          } }];
+        }
+        if (selector === "#list3") {
+          return [{ result: {
+            baseline: true, kind: "list",
+            snapshot: { "苹果": { price: "¥3" }, "香蕉": { price: "¥5" } },
+            baseline_count: 2, current_count: 2, actual: "基线 2 项",
+            message: "已记录基线 2 项，下次检测开始比对",
+          } }];
+        }
+        const passed = selector === "#b";
+        return [{ result: {
+          found: true, passed, kind: "script",
+          actual: passed ? "详情 · 8 字" : "列表 · 2 项 · 各 1 字",
+          message: passed ? "满足条件" : "不满足条件",
+        } }];
+      },
+    },
+  };
+</script>
+<script type="module" data-n="test-script">
+window.addEventListener("error", (event) => document.body.setAttribute("data-test-error", event.message));
+window.addEventListener("unhandledrejection", (event) => document.body.setAttribute("data-test-error", String((event.reason && event.reason.message) || event.reason)));
+await import("../src/popup/popup.js");
+
+const row_of = (name) => Array.from(document.querySelectorAll(".detection-rule-row"))
+  .find((row) => row.querySelector(".detection-rule-name").textContent.trim() === name);
+const detect_button = (row) => row.querySelector('[n="detection-rule-detect"]');
+
+// 规则与当前标签页并发加载：等两行渲染、两个按钮都可用再断言。
+await new Promise((resolve) => {
+  const started = Date.now();
+  const check = () => {
+    const ready = document.querySelectorAll(".detection-rule-row").length === 5
+      && document.querySelectorAll('[n="detection-rule-detect"]:not([disabled])').length === 5;
+    if (ready || Date.now() - started > 8000) resolve();
+    else setTimeout(check, 100);
+  };
+  check();
+});
+
+const s1 = row_of("JS 甲");
+const s2 = row_of("JS 乙");
+if (!s1 || !s2) throw new Error("两条 JS 函数规则都应渲染");
+if (document.querySelector("#detect-page .detect-count").textContent.trim() !== "共 5 条") throw new Error("计数应为 5");
+
+// —— 已开启「允许用户脚本」：规则可检测，页级提示隐藏 ——
+if (detect_button(s1).disabled || detect_button(s2).disabled) throw new Error("已开启用户脚本时 JS 函数规则应可检测");
+const notice = document.querySelector('#detect-page [n="detect-notice"]');
+if (!notice) throw new Error("应有页级提示元素");
+if (!notice.hidden) throw new Error("已开启用户脚本时页级提示应隐藏");
+if (!s1.querySelector('[n="detection-rule-shape"]').textContent.includes("列表 · 2 项")) throw new Error(`形态徽标错误：${s1.querySelector('[n="detection-rule-shape"]').textContent}`);
+
+// —— 检测第二条：生成的代码同时含自身与同组其他框的选择器，others 的键为该组编号 ——
+detect_button(s2).click();
+await new Promise((resolve) => setTimeout(resolve, 300));
+if (globalThis.__script_calls.length !== 1) throw new Error(`点击检测应执行一次用户脚本，实际 ${globalThis.__script_calls.length}`);
+const call = globalThis.__script_calls[0];
+if (call.target.tabId !== 1) throw new Error(`应以当前标签页为目标：${JSON.stringify(call.target)}`);
+if (!call.code.includes('var self = read_content("#b")')) throw new Error(`应嵌入自身选择器：${call.code.slice(0, 200)}`);
+if (!call.code.includes('{"1":"#a"}')) throw new Error(`others 应为同组其他框的编号 → 选择器：${call.code.match(/var selectors = .*/)?.[0]}`);
+if (!call.code.includes("function inspect_content")) throw new Error("应内联自包含的取内容函数（宿主侧只有取节点 / outerHTML / 文本）");
+if (!call.code.includes('return others[1].text !== self.text;')) throw new Error("应原样嵌入用户函数体");
+
+const s2_result = s2.querySelector('[n="detection-rule-result"]');
+if (s2_result.hasAttribute("hidden")) throw new Error("检测后应显示结果");
+if (!s2_result.classList.contains("is-pass")) throw new Error(`通过的结果应带 is-pass：${s2_result.className}`);
+if (!s2_result.textContent.includes("满足条件")) throw new Error(`结果应展示 message：${s2_result.textContent}`);
+if (!s2_result.textContent.includes("详情 · 8 字")) throw new Error(`结果应展示结构摘要：${s2_result.textContent}`);
+
+// —— 检测第一条：others 的键随之变成 2 ——
+detect_button(s1).click();
+await new Promise((resolve) => setTimeout(resolve, 300));
+if (globalThis.__script_calls.length !== 2) throw new Error("第二次检测应再执行一次用户脚本");
+if (!globalThis.__script_calls[1].code.includes('{"2":"#b"}')) throw new Error(`编号应随组内位置：${globalThis.__script_calls[1].code.match(/var selectors = .*/)?.[0]}`);
+const s1_result = s1.querySelector('[n="detection-rule-result"]');
+if (!s1_result.classList.contains("is-fail")) throw new Error(`不通过的结果应带 is-fail：${s1_result.className}`);
+if (s1_result.textContent.includes("满足条件") && !s1_result.textContent.includes("不满足条件")) throw new Error("不应显示为满足");
+if (s2_result.classList.contains("is-fail")) throw new Error("s2 的结果不应被 s1 的检测覆盖");
+const feedback = document.querySelector("#detect-page .detect-feedback");
+if (feedback.hasAttribute("hidden") || !feedback.textContent.includes("JS 甲")) throw new Error(`检测后应有反馈：${feedback.textContent}`);
+
+// —— 列表对比：条件描述带基线项数 ——
+const l1 = row_of("列表甲");
+const l2 = row_of("列表乙");
+const l3 = row_of("列表丙");
+if (!l1 || !l2 || !l3) throw new Error("三条列表对比规则都应渲染");
+const condition_of = (row) => row.querySelector(".detection-rule-condition").textContent.trim();
+if (condition_of(l1) !== "列表对比 · 基线 1 项") throw new Error(`已记录基线应带项数：${condition_of(l1)}`);
+if (condition_of(l3) !== "列表对比 · 待记录基线") throw new Error(`未记录基线应显示待记录：${condition_of(l3)}`);
+
+const diff_line = (row, kind) => row.querySelector(`[n="detection-rule-diff-${kind}"]`);
+
+// —— 已记录基线 + 有变更：注入代码含基线 JSON 与取键函数体，结果渲染 is-pass 与三行 diff ——
+detect_button(l1).click();
+await new Promise((resolve) => setTimeout(resolve, 300));
+if (globalThis.__script_calls.length !== 3) throw new Error(`检测列表规则应再执行一次用户脚本，实际 ${globalThis.__script_calls.length}`);
+const list_call = globalThis.__script_calls[2];
+if (list_call.target.tabId !== 1) throw new Error(`应以当前标签页为目标：${JSON.stringify(list_call.target)}`);
+if (!list_call.code.includes('{"苹果":{"price":"¥3"}}')) throw new Error(`应嵌入基线 JSON：${list_call.code.slice(0, 300)}`);
+if (!list_call.code.includes('r["苹果"] = { price: "¥3" };')) throw new Error("应原样嵌入取键函数体");
+if (!list_call.code.includes("function inspect_content")) throw new Error("列表对比也应内联取内容函数");
+const l1_result = l1.querySelector('[n="detection-rule-result"]');
+if (!l1_result.classList.contains("is-pass")) throw new Error(`有变更应带 is-pass：${l1_result.className}`);
+if (!l1_result.textContent.includes("有变更")) throw new Error(`结果应展示 message：${l1_result.textContent}`);
+if (diff_line(l1, "added").hidden || diff_line(l1, "added").textContent !== "新增 2：橙子、葡萄") throw new Error(`新增行错误：${diff_line(l1, "added").textContent}`);
+if (diff_line(l1, "updated").hidden || diff_line(l1, "updated").textContent !== "更新 1：苹果（price、stock）") throw new Error(`更新行错误：${diff_line(l1, "updated").textContent}`);
+if (diff_line(l1, "removed").hidden || diff_line(l1, "removed").textContent !== "删除 1：香蕉") throw new Error(`删除行错误：${diff_line(l1, "removed").textContent}`);
+
+// —— 已记录基线 + 无变更：is-fail，三行 diff 隐藏 ——
+detect_button(l2).click();
+await new Promise((resolve) => setTimeout(resolve, 300));
+const l2_result = l2.querySelector('[n="detection-rule-result"]');
+if (!l2_result.classList.contains("is-fail")) throw new Error(`无变更应带 is-fail：${l2_result.className}`);
+if (diff_line(l2, "added").hidden !== true || diff_line(l2, "updated").hidden !== true || diff_line(l2, "removed").hidden !== true) throw new Error("无变更时三行 diff 应隐藏");
+
+// —— 基线为 null：首次检测记录基线，写回 storage，行描述随之更新 ——
+detect_button(l3).click();
+await new Promise((resolve) => setTimeout(resolve, 300));
+const l3_result = l3.querySelector('[n="detection-rule-result"]');
+if (!l3_result.classList.contains("is-baseline")) throw new Error(`首次检测应带 is-baseline：${l3_result.className}`);
+if (!l3_result.textContent.includes("已记录基线 2 项")) throw new Error(`结果应展示基线文案：${l3_result.textContent}`);
+if (diff_line(l3, "added").hidden !== true) throw new Error("基线结果不应有 diff 行");
+const stored_l3 = (globalThis.__storage_writes["detection-rules"] || []).find((rule) => rule.id === "l3");
+if (!stored_l3 || !stored_l3.baseline || Object.keys(stored_l3.baseline).length !== 2) throw new Error(`基线应写回 storage：${JSON.stringify(stored_l3 && stored_l3.baseline)}`);
+if (stored_l3.baseline["苹果"].price !== "¥3") throw new Error(`基线字段值应写回：${JSON.stringify(stored_l3.baseline)}`);
+if (condition_of(l3) !== "列表对比 · 基线 2 项") throw new Error(`写入基线后条件描述应更新：${condition_of(l3)}`);
+
+document.body.setAttribute("data-test-passed", "");
+</script></body></html>

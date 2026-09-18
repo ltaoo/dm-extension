@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="zh-CN" data-n="extract-sandbox-document">
+  <head data-n="extract-sandbox-head">
+    <meta charset="UTF-8" data-n="charset" />
+    <title data-n="extract-sandbox-title">提取执行器</title>
+  </head>
+  <body data-n="extract-sandbox-body">
+    <p data-n="extract-sandbox-note">
+      提取执行器：宿主通过 postMessage 传入 HTML 与函数体，这里执行后回传结果。
+      扩展页（含 srcdoc iframe）的 CSP 禁止 eval，跑不了用户函数，所以借这一页。
+    </p>
+    <script data-n="extract-sandbox-script">
+      // 沙箱页跑在自己的 CSP（含 'unsafe-eval'）与不透明源里：可以用 eval / new Function，
+      // 但拿不到扩展 API，也读不到宿主文档 —— 只认 postMessage 进来的 HTML 字符串。
+      // 因此这里的 DOMParser 才是「从一份完整 HTML 里取内容」的解析器（有 DOM 查询能力，不加载资源、不跑页面脚本）。
+      "use strict";
+
+      var OUTPUT_LIMIT = 200000;
+
+      // DOM 节点 / 函数 / 循环引用都不能直接 JSON 化，先降级成可读字符串，免得整份输出因为一个节点就抛错。
+      function describe_node(node) {
+        // 非元素节点（#text / #comment…）的 nodeName 自带前导 #。
+        if (node.nodeType !== 1) return String(node.nodeName || "node").toLowerCase();
+        var tag = String(node.tagName || "").toLowerCase();
+        var name = tag;
+        if (node.id) name += "#" + node.id;
+        else if (typeof node.className === "string" && node.className.trim()) name += "." + node.className.trim().split(/\s+/)[0];
+        var text = String(node.textContent || "").replace(/\s+/g, " ").trim();
+        if (text.length > 30) text = text.slice(0, 30) + "…";
+        return text ? name + " ⟨" + text + "⟩" : name;
+      }
+
+      function stringify(value) {
+        var seen = [];
+        // 根值是 Symbol / undefined 时 JSON.stringify 直接返回 undefined，别让它把 reply.size 弄崩。
+        var text = JSON.stringify(value, function (key, item) {
+          if (typeof item === "function") return "[函数 " + (item.name || "匿名") + "]";
+          if (typeof item === "bigint") return String(item) + "n";
+          if (item && typeof item === "object" && typeof item.nodeType === "number" && typeof item.nodeName === "string") {
+            return describe_node(item);
+          }
+          if (item && typeof item === "object") {
+            if (seen.indexOf(item) !== -1) return "[循环引用]";
+            seen.push(item);
+          }
+          return item;
+        }, 2);
+        return text === undefined ? String(value) : text;
+      }
+
+      // 函数体走 async 包裹：同步 return 与 await 都支持，宿主侧只管 await 结果。
+      function build(code) {
+        return new Function("document", "return (async function () {\n" + code + "\n})();");
+      }
+
+      window.addEventListener("message", async function (event) {
+        var request = event.data;
+        if (!request || request.dm_extract !== "run" || !event.source) return;
+        var reply = { dm_extract: "result", token: request.token };
+        var started = performance.now();
+        try {
+          var document_ = new DOMParser().parseFromString(String(request.html || ""), "text/html");
+          var value = await build(String(request.code || ""))(document_);
+          var json = stringify(value === undefined ? "[没有返回值：函数体需要 return]" : value);
+          reply.ok = true;
+          reply.elapsed = Math.round(performance.now() - started);
+          reply.size = json.length;
+          reply.truncated = json.length > OUTPUT_LIMIT;
+          reply.json = json.slice(0, OUTPUT_LIMIT);
+        } catch (error) {
+          reply.ok = false;
+          reply.elapsed = Math.round(performance.now() - started);
+          reply.error = (error && error.message) || String(error);
+        }
+        event.source.postMessage(reply, "*");
+      });
+    </script>
+  </body>
+</html>

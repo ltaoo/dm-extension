@@ -7,6 +7,10 @@
   // popup.js / store.js 顶层取全局 chrome（getManifest 在模块加载时执行），必须先桩好。
   const created_tabs = [];
   globalThis.__created_tabs = created_tabs;
+  const writes = {};
+  globalThis.__storage_writes = writes;
+  globalThis.__confirm_messages = [];
+  globalThis.confirm = (message) => { globalThis.__confirm_messages.push(message); return true; };
   globalThis.chrome = {
     runtime: {
       getManifest: () => ({ version_name: "v260830", version: "26.8.30" }),
@@ -23,6 +27,7 @@
             "popup-page": "savepage",
             "page-parsers": [],
             "comparison-group": "分组 1",
+            "comparison-groups": ["分组 1", "分组 2"],
             "comparison-records": [
               { id: "1", group: "分组 1", title: "A", url: "https://a.test/", html: '<html><body><div id="a">甲</div></body></html>', created_at: 1 },
               { id: "2", group: "分组 1", title: "B", url: "https://b.test/", html: '<html><body><div id="a">甲</div><div id="b">乙</div></body></html>', created_at: 2 },
@@ -33,8 +38,8 @@
           const wanted = Array.isArray(keys) ? keys : [keys];
           return Object.fromEntries(wanted.filter(Boolean).map((key) => [key, data[key]]));
         },
-        set: async () => {},
-        remove: async () => {},
+        set: async (items) => { Object.assign(writes, items); },
+        remove: async (key) => { writes[key] = undefined; },
       },
       onChanged: { addListener() {}, removeListener() {} },
     },
@@ -82,5 +87,22 @@ await new Promise((resolve) => setTimeout(resolve, 200));
 if (!globalThis.__created_tabs.some((url) => url.includes("src/compare/preview.html") && url.includes("id=1"))) {
   throw new Error(`点击记录应打开预览页，实际打开：${globalThis.__created_tabs.join("、")}`);
 }
+
+// 分组固定存在：分组来自 storage 的分组清单，不依赖组内是否还有记录。
+const group_tabs = Array.from(document.querySelectorAll(".comparison-group-tab")).map((button) => button.textContent.trim());
+if (group_tabs.join("|") !== "分组 1|分组 2") throw new Error(`分组标签错误：${group_tabs.join("|")}`);
+if (document.querySelectorAll(".comparison-group-remove").length !== 2) throw new Error("每个分组标签应有一个删除按钮");
+
+// 删除分组：确认后该分组与其记录一起移除，并写回分组清单。
+document.querySelectorAll(".comparison-group-remove")[1].click();
+await new Promise((resolve) => setTimeout(resolve, 200));
+if (!globalThis.__confirm_messages.some((message) => message.includes("分组 2"))) throw new Error("删除分组应先确认");
+if (globalThis.__storage_writes["comparison-groups"].join("|") !== "分组 1") throw new Error(`删除分组后应写回分组清单，实际 ${JSON.stringify(globalThis.__storage_writes["comparison-groups"])}`);
+const remaining = globalThis.__storage_writes["comparison-records"];
+if (!remaining || remaining.length !== 3 || remaining.some((record) => record.group === "分组 2")) throw new Error("删除分组应同时移除该分组的记录");
+const after_tabs = Array.from(document.querySelectorAll(".comparison-group-tab")).map((button) => button.textContent.trim());
+if (after_tabs.join("|") !== "分组 1") throw new Error(`删除分组后应只剩一个分组标签：${after_tabs.join("|")}`);
+if (!document.querySelector(".comparison-group-remove").disabled) throw new Error("仅剩一个分组时删除按钮应置灰");
+
 document.body.setAttribute("data-test-passed", "");
 </script></body></html>

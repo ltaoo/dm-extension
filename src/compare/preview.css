@@ -2,8 +2,72 @@
 * { box-sizing: border-box; }
 html, body { width: 100%; height: 100%; margin: 0; }
 body { background: Canvas; color: CanvasText; }
+[hidden] { display: none !important; }
 .preview-root { display: flex; flex-direction: column; width: 100%; height: 100%; }
 .preview-heading { display: flex; flex: none; align-items: baseline; gap: 12px; padding: 10px 16px; border-bottom: 1px solid GrayText; }
 .preview-record-title { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .preview-record-url { flex: 1; min-width: 0; font-size: 12px; color: GrayText; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.preview-frame { flex: 1; width: 100%; min-height: 0; border: 0; background: Canvas; }
+
+/* —— 框选 —— */
+.preview-select-toggle { display: inline-flex; flex: none; align-self: center; align-items: center; padding: 4px 10px; border: 1px solid GrayText; border-radius: 6px; background: Canvas; color: CanvasText; font: inherit; font-size: 12px; cursor: pointer; }
+.preview-select-toggle:hover:not(:disabled) { background: color-mix(in srgb, CanvasText 8%, Canvas); }
+.preview-select-toggle[aria-pressed="true"] { border-color: Highlight; background: Highlight; color: HighlightText; }
+.preview-select-toggle:disabled { color: GrayText; cursor: not-allowed; }
+.preview-select-toggle:focus-visible { outline: 2px solid Highlight; outline-offset: 1px; }
+
+/* overflow: hidden 是必须的：遮罩是 stage 的绝对定位子节点，容器比视口高时它的轮廓会撑到 stage 外，
+   不裁剪就会把整页的滚动区域撑大 → 外层滚动条出现 → 视口变窄 → iframe 重新排版（框选时页面抖动的根因）。 */
+.preview-stage { position: relative; display: flex; flex: 1; min-height: 0; overflow: hidden; }
+.preview-frame { flex: 1; width: 100%; min-width: 0; min-height: 0; border: 0; background: Canvas; }
+
+.preview-select-overlay { position: absolute; inset: 0; z-index: 2; pointer-events: none; }
+.preview-select-box { position: absolute; border: 1px dashed Highlight; background: color-mix(in srgb, Highlight 12%, transparent); }
+.preview-select-container { position: absolute; border: 2px solid Highlight; }
+.preview-select-boxes { position: absolute; inset: 0; }
+.preview-select-saved { position: absolute; border: 1px solid Highlight; background: color-mix(in srgb, Highlight 8%, transparent); }
+.preview-select-saved-label { position: absolute; top: -10px; left: -10px; min-width: 18px; padding: 0 5px; border-radius: 9px; background: Highlight; color: HighlightText; font-size: 10px; font-variant-numeric: tabular-nums; line-height: 18px; text-align: center; }
+.preview-select-bar { position: absolute; z-index: 5; display: flex; align-items: center; gap: 6px; padding: 3px 6px; border: 1px solid GrayText; border-radius: 6px; background: Canvas; color: CanvasText; pointer-events: auto; }
+.preview-select-bar-label { max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: GrayText; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11px; }
+.preview-select-bar button { padding: 1px 6px; border: 1px solid GrayText; border-radius: 4px; background: Canvas; color: CanvasText; font: inherit; font-size: 11px; cursor: pointer; }
+.preview-select-bar button:hover:not(:disabled) { background: color-mix(in srgb, CanvasText 8%, Canvas); }
+.preview-select-bar button:disabled { color: GrayText; cursor: not-allowed; }
+.preview-select-bar button:focus-visible { outline: 2px solid Highlight; outline-offset: 1px; }
+.preview-select-hint { position: absolute; top: 8px; left: 8px; z-index: 4; max-width: calc(100% - 16px); padding: 4px 8px; border: 1px solid GrayText; border-radius: 6px; background: Canvas; color: CanvasText; font-size: 12px; pointer-events: none; }
+
+.preview-rule-panel { position: absolute; top: 12px; right: 12px; z-index: 3; display: flex; flex-direction: column; gap: 8px; width: 260px; padding: 12px; border: 1px solid GrayText; border-radius: 8px; background: Canvas; color: CanvasText; box-shadow: 0 6px 20px rgba(0, 0, 0, .2); }
+.preview-rule-panel label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; }
+.preview-rule-panel input, .preview-rule-panel select { width: 100%; padding: 4px 6px; border: 1px solid GrayText; border-radius: 4px; background: Canvas; color: CanvasText; font: inherit; font-size: 12px; }
+.preview-rule-panel textarea { width: 100%; min-height: 120px; padding: 4px 6px; border: 1px solid GrayText; border-radius: 4px; background: Canvas; color: CanvasText; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; line-height: 1.5; resize: vertical; white-space: pre; overflow: auto; }
+.preview-rule-shape { align-self: flex-start; margin: 0; padding: 1px 6px; border: 1px solid GrayText; border-radius: 9px; color: GrayText; font-size: 11px; }
+.preview-rule-hint { margin: 0; color: GrayText; font-size: 11px; line-height: 1.5; }
+.preview-rule-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.preview-rule-actions button { padding: 4px 10px; border: 1px solid GrayText; border-radius: 6px; background: Canvas; color: CanvasText; font: inherit; font-size: 12px; cursor: pointer; }
+.preview-rule-actions button:hover { background: color-mix(in srgb, CanvasText 8%, Canvas); }
+.preview-rule-feedback { margin: 0; font-size: 12px; color: GrayText; }
+
+/* —— 提取测试 —— */
+
+/* 舞台的兄弟节点（不是浮层）：展开时压缩 stage，避免盖住预览内容。 */
+.preview-extract { display: flex; flex: none; flex-direction: column; gap: 8px; max-height: 45%; padding: 10px 16px; border-top: 1px solid GrayText; overflow: auto; }
+.preview-extract-row { display: flex; align-items: center; gap: 8px; }
+.preview-extract-row label { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+.preview-extract-row select { padding: 3px 6px; border: 1px solid GrayText; border-radius: 4px; background: Canvas; color: CanvasText; font: inherit; font-size: 12px; }
+.preview-extract-row button { padding: 4px 10px; border: 1px solid GrayText; border-radius: 6px; background: Canvas; color: CanvasText; font: inherit; font-size: 12px; cursor: pointer; }
+.preview-extract-row button:hover:not(:disabled) { background: color-mix(in srgb, CanvasText 8%, Canvas); }
+.preview-extract-row button:disabled { color: GrayText; cursor: not-allowed; }
+.preview-extract-row button:focus-visible { outline: 2px solid Highlight; outline-offset: 1px; }
+/* 入参预览：HTML 会很长，夹住高度 + 折行，免得撑爆面板或逼出横向滚动。 */
+.preview-extract-note { margin: 0; color: GrayText; font-size: 11px; }
+.preview-extract-html { max-height: 120px; margin: 0; padding: 8px; border: 1px solid GrayText; border-radius: 4px; background: Canvas; color: CanvasText; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; overflow: auto; }
+.preview-extract-code { display: flex; flex-direction: column; gap: 4px; font-size: 12px; }
+.preview-extract-code textarea { width: 100%; min-height: 90px; padding: 4px 6px; border: 1px solid GrayText; border-radius: 4px; background: Canvas; color: CanvasText; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; line-height: 1.5; resize: vertical; white-space: pre; overflow: auto; }
+.preview-extract-hint { margin: 0; color: GrayText; font-size: 11px; line-height: 1.5; }
+.preview-extract-status { margin: 0; font-size: 12px; color: GrayText; }
+.preview-extract-status.is-error { font-weight: 700; }
+.preview-extract-output { display: flex; flex-direction: column; gap: 8px; }
+.preview-extract-json { max-height: 260px; margin: 0; padding: 8px; border: 1px solid GrayText; border-radius: 4px; background: Canvas; color: CanvasText; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; line-height: 1.5; white-space: pre; overflow: auto; }
+.preview-extract-table { border-collapse: collapse; font-size: 12px; }
+.preview-extract-table th, .preview-extract-table td { padding: 3px 8px; border: 1px solid GrayText; text-align: left; vertical-align: top; }
+.preview-extract-table th { background: color-mix(in srgb, CanvasText 8%, Canvas); font-weight: 700; }
+/* 执行器只负责算，不需要占位；display:none 的 iframe 照样加载并执行脚本。 */
+.preview-extract-frame { display: none; }

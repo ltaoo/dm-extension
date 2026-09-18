@@ -1,0 +1,196 @@
+<!doctype html><html data-n="test-document"><head data-n="test-head"><meta charset="utf-8">
+<link rel="stylesheet" href="../assets/vendor/src/dmui.css" data-n="component-style" />
+<link rel="stylesheet" href="../src/popup/popup.css" data-n="popup-style" />
+</head><body data-n="test-body">
+<div id="root" data-n="popup-root"></div>
+<script data-n="test-stub">
+  // popup.js / store.js 顶层取全局 chrome（getManifest 在模块加载时执行），必须先桩好。
+  const writes = {};
+  globalThis.__storage_writes = writes;
+  globalThis.__confirm_messages = [];
+  globalThis.confirm = (message) => { globalThis.__confirm_messages.push(message); return true; };
+  // 捕获注入调用，验证传给页面的确实是规则与自包含函数。
+  const exec_calls = [];
+  globalThis.__exec_calls = exec_calls;
+  globalThis.chrome = {
+    runtime: {
+      getManifest: () => ({ version_name: "v260830", version: "26.8.30" }),
+      getURL: (path) => `chrome-extension://test/${path}`,
+      sendMessage: async () => ({ success: true, profiles: [{
+        id: "default", name: "默认", enabled: false, endpoint: "http://127.0.0.1:2022/api/cookies/update", intervalMinutes: 60,
+        encryption: { method: "none", uuid: "", password: "" }, domainFilter: { domains: [] },
+      }], statuses: {} }),
+    },
+    storage: {
+      local: {
+        get: async (keys) => {
+          const data = {
+            "popup-page": "detect",
+            "page-parsers": [],
+            "detection-rules": [
+              { id: "r1", name: "价格颜色", type: "color", expected: "rgb(229, 57, 53)", selector: "#price", node: "div#price", hostname: "example.com", source_url: "https://example.com/", source_record_id: "1", created_at: 1 },
+              { id: "r2", name: "他站库存", type: "content", expected: "已售罄", selector: "#stock", node: "div#stock", hostname: "other.test", source_url: "https://other.test/", source_record_id: "2", created_at: 2 },
+              { id: "r3", name: "库存文案", type: "content", expected: "已售罄", selector: "#stock", node: "div#stock", hostname: "example.com", source_url: "https://example.com/", source_record_id: "3", created_at: 3 },
+              { id: "r4", name: "JS 库存", type: "script", code: 'return self.text.includes("已售罄");', selector: "#stock", node: "div#stock", hostname: "example.com", group_id: "g1", shape: "detail", item_count: 0, source_url: "https://example.com/", source_record_id: "4", created_at: 4 },
+              { id: "r5", name: "列表库存", type: "list", code: 'var r = {}; return r;', selector: "#stock", node: "div#stock", hostname: "example.com", group_id: "g2", shape: "list", item_count: 3, baseline: null, source_url: "https://example.com/", source_record_id: "5", created_at: 5 },
+            ],
+          };
+          const wanted = Array.isArray(keys) ? keys : [keys];
+          return Object.fromEntries(wanted.filter(Boolean).map((key) => [key, data[key]]));
+        },
+        set: async (items) => { Object.assign(writes, items); },
+        remove: async (key) => { writes[key] = undefined; },
+      },
+      onChanged: { addListener() {}, removeListener() {} },
+    },
+    tabs: {
+      query: async () => [{ id: 1, url: "https://example.com/", title: "示例" }],
+      create: async () => ({}),
+    },
+    cookies: { getAllCookieStores: async () => [{ id: "0", tabIds: [1] }], getAll: async () => [] },
+    scripting: {
+      // 只捕获变更检测的注入（refresh_page 抓页面 HTML 也走 executeScript，不算检测）。
+      // 检测结果按规则类型区分：颜色规则通过、内容规则不通过，一次覆盖 is-pass / is-fail。
+      executeScript: async ({ func, args }) => {
+        if (func?.name !== "evaluate_detection_rule") {
+          return [{ result: { title: "示例页面", url: "https://example.com/", parser: "generic", html: "<html><body><p>内容</p></body></html>", images: [], videos: [], files: [] } }];
+        }
+        exec_calls.push({ func, args });
+        const rule = args[0];
+        const passed = rule.type === "color";
+        return [{ result: {
+          found: true, passed, kind: rule.type,
+          actual: rule.type === "color" ? "文字 rgb(229, 57, 53) · 背景 rgba(0, 0, 0, 0)" : "已售罄 · Sold Out",
+          message: passed ? "满足条件" : "不满足条件",
+        } }];
+      },
+    },
+  };
+</script>
+<script type="module" data-n="test-script">
+window.addEventListener("error", (event) => document.body.setAttribute("data-test-error", event.message));
+window.addEventListener("unhandledrejection", (event) => document.body.setAttribute("data-test-error", String((event.reason && event.reason.message) || event.reason)));
+await import("../src/popup/popup.js");
+
+const row_of = (name) => Array.from(document.querySelectorAll(".detection-rule-row"))
+  .find((row) => row.querySelector(".detection-rule-name").textContent.trim() === name);
+
+// 本测试刻意不提供 chrome.userScripts：JS 函数规则应因未开启「允许用户脚本」而置灰。
+if (globalThis.chrome.userScripts) throw new Error("本测试不应提供 chrome.userScripts");
+
+// 规则与当前标签页是并发加载的：等 5 行渲染出来，并等 hostname 定下来（异源行的原因与可用按钮都随它更新）再断言。
+await new Promise((resolve) => {
+  const started = Date.now();
+  const check = () => {
+    const ready = document.querySelectorAll(".detection-rule-row").length === 5
+      && document.querySelectorAll('[n="detection-rule-detect"]:not([disabled])').length === 2;
+    if (ready || Date.now() - started > 8000) resolve();
+    else setTimeout(check, 100);
+  };
+  check();
+});
+
+// —— 菜单与标题 ——
+const menu_labels = Array.from(document.querySelectorAll(".popup-menu-button")).map((button) => button.textContent.trim());
+if (!menu_labels.includes("变更检测")) throw new Error(`菜单应含「变更检测」，实际 ${menu_labels.join("、")}`);
+if (!document.querySelector('[n="menu-detect"]')) throw new Error("菜单应有变更检测按钮");
+const heading = document.querySelector(".popup-title");
+if (!heading || heading.textContent.trim() !== "变更检测") throw new Error(`标题应为「变更检测」：${heading && heading.textContent}`);
+const detect_page = document.querySelector("#detect-page");
+if (!detect_page || detect_page.hasAttribute("hidden")) throw new Error("变更检测页应可见");
+
+// —— 规则列表 ——
+const rows = Array.from(document.querySelectorAll(".detection-rule-row"));
+if (rows.length !== 5) throw new Error(`应渲染 5 条规则，实际 ${rows.length}`);
+if (document.querySelector("#detect-page .detect-count").textContent.trim() !== "共 5 条") throw new Error("计数应为 5");
+if (document.querySelector(".detection-rules-empty").hasAttribute("hidden") === false) throw new Error("有规则时不应显示空状态");
+
+const r1 = row_of("价格颜色");
+const r2 = row_of("他站库存");
+const r3 = row_of("库存文案");
+const r4 = row_of("JS 库存");
+const r5 = row_of("列表库存");
+if (!r1 || !r2 || !r3 || !r4 || !r5) throw new Error("五条规则行都应渲染");
+
+// 条件描述来自 describe_rule，选择器挂在 title 上便于核对。
+if (r1.querySelector(".detection-rule-condition").textContent.trim() !== "颜色为 rgb(229, 57, 53)") throw new Error("颜色规则描述错误");
+if (r1.querySelector(".detection-rule-condition").getAttribute("title") !== "#price") throw new Error("条件应带出选择器");
+if (r3.querySelector(".detection-rule-condition").textContent.trim() !== "内容匹配 已售罄") throw new Error("内容规则描述错误");
+if (r1.querySelector(".detection-rule-source").textContent.trim() !== "来源 example.com") throw new Error("应显示规则来源 hostname");
+
+// —— 按来源 hostname 限定：异源规则置灰并给出原因 ——
+const detect_button = (row) => row.querySelector('[n="detection-rule-detect"]');
+const reason_of = (row) => row.querySelector(".detection-rule-reason");
+if (detect_button(r1).disabled) throw new Error("同源规则的检测按钮应可用");
+if (detect_button(r2).disabled !== true) throw new Error("异源规则的检测按钮应置灰");
+if (reason_of(r1).hasAttribute("hidden") === false) throw new Error("同源规则不应显示原因");
+const reason_text = reason_of(r2).textContent;
+if (reason_of(r2).hasAttribute("hidden")) throw new Error("异源规则应显示原因");
+if (!reason_text.includes("other.test") || !reason_text.includes("example.com")) throw new Error(`原因应说明来源与当前页面：${reason_text}`);
+if (detect_button(r3).disabled) throw new Error("同源规则的检测按钮应可用");
+
+// —— JS 函数规则：未开启「允许用户脚本」时置灰，并给出开启方式；形态徽标按 shape 渲染 ——
+const shape_badge_of = (row) => row.querySelector('[n="detection-rule-shape"]');
+if (r4.querySelector(".detection-rule-condition").textContent.trim() !== 'JS 函数 return self.text.includes("已售罄");') throw new Error(`JS 规则描述应为首行代码：${r4.querySelector(".detection-rule-condition").textContent}`);
+if (detect_button(r4).disabled !== true) throw new Error("未开启用户脚本时 JS 函数规则应置灰");
+if (reason_of(r4).hasAttribute("hidden") || !reason_of(r4).textContent.includes("允许用户脚本")) throw new Error(`原因应说明如何开启：${reason_of(r4).textContent}`);
+if (shape_badge_of(r4).hidden || shape_badge_of(r4).textContent !== "详情") throw new Error(`JS 规则应带形态徽标：${shape_badge_of(r4).textContent}`);
+if (!shape_badge_of(r1).hidden) throw new Error("老规则（无形态）不应显示徽标");
+const notice = document.querySelector('#detect-page [n="detect-notice"]');
+if (!notice || notice.hidden) throw new Error("未开启用户脚本时应有页级提示");
+if (!notice.textContent.includes("允许用户脚本")) throw new Error(`页级提示应说明开启方式：${notice.textContent}`);
+if (!notice.textContent.includes("JS 函数") || !notice.textContent.includes("列表对比")) throw new Error(`页级提示应同时点名两类规则：${notice.textContent}`);
+
+// —— 列表对比规则：待记录基线的描述、形态徽标、同样依赖「允许用户脚本」——
+if (r5.querySelector(".detection-rule-condition").textContent.trim() !== "列表对比 · 待记录基线") throw new Error(`列表对比描述错误：${r5.querySelector(".detection-rule-condition").textContent}`);
+if (detect_button(r5).disabled !== true) throw new Error("未开启用户脚本时列表对比规则应置灰");
+if (reason_of(r5).hasAttribute("hidden") || !reason_of(r5).textContent.includes("允许用户脚本")) throw new Error(`列表对比置灰原因应说明如何开启：${reason_of(r5).textContent}`);
+if (shape_badge_of(r5).hidden || shape_badge_of(r5).textContent !== "列表 · 3 项") throw new Error(`列表对比规则应带列表徽标：${shape_badge_of(r5).textContent}`);
+
+// 异源规则的检测按钮点不动（disabled）：既不注入，也不产生结果与反馈。
+detect_button(r2).click();
+await new Promise((resolve) => setTimeout(resolve, 200));
+if (globalThis.__exec_calls.length !== 0) throw new Error("置灰的检测按钮不应触发注入");
+if (r2.querySelector('[n="detection-rule-result"]').hasAttribute("hidden") === false) throw new Error("置灰的检测按钮不应产生结果");
+if (!document.querySelector("#detect-page .detect-feedback").hasAttribute("hidden")) throw new Error("置灰的检测按钮不应产生反馈");
+
+// —— 检测：注入自包含函数与规则，结果按 passed 呈现 ——
+if (r1.querySelector('[n="detection-rule-result"]').hasAttribute("hidden") === false) throw new Error("未检测前不应有结果");
+
+detect_button(r1).click();
+await new Promise((resolve) => setTimeout(resolve, 300));
+if (globalThis.__exec_calls.length !== 1) throw new Error(`点击检测应注入一次，实际 ${globalThis.__exec_calls.length}`);
+const call = globalThis.__exec_calls[0];
+if (typeof call.func !== "function") throw new Error("注入的 func 应为函数（供 scripting.executeScript 序列化）");
+if (call.func.name !== "evaluate_detection_rule") throw new Error(`注入的函数应为规则求值器：${call.func.name}`);
+if (call.args[0].id !== "r1") throw new Error(`注入的规则应为 r1：${JSON.stringify(call.args[0])}`);
+if (call.args[0].selector !== "#price" || call.args[0].expected !== "rgb(229, 57, 53)") throw new Error("注入的规则字段应完整");
+
+const r1_result = r1.querySelector('[n="detection-rule-result"]');
+if (r1_result.hasAttribute("hidden")) throw new Error("检测后应显示结果");
+if (!r1_result.classList.contains("is-pass")) throw new Error(`通过的结果应带 is-pass：${r1_result.className}`);
+if (!r1_result.textContent.includes("满足条件")) throw new Error(`结果应展示 message：${r1_result.textContent}`);
+if (!r1_result.textContent.includes("rgb(229, 57, 53)")) throw new Error(`结果应展示实际值：${r1_result.textContent}`);
+if (r3.querySelector('[n="detection-rule-result"]').hasAttribute("hidden") === false) throw new Error("结果只应写在被测规则那一行");
+
+detect_button(r3).click();
+await new Promise((resolve) => setTimeout(resolve, 300));
+const r3_result = r3.querySelector('[n="detection-rule-result"]');
+if (!r3_result.classList.contains("is-fail")) throw new Error(`不通过的结果应带 is-fail：${r3_result.className}`);
+if (!r3_result.textContent.includes("不满足条件")) throw new Error(`结果应展示 message：${r3_result.textContent}`);
+if (r1_result.classList.contains("is-fail")) throw new Error("r1 的结果不应被 r3 的检测覆盖");
+const detect_feedback = document.querySelector("#detect-page .detect-feedback");
+if (detect_feedback.hasAttribute("hidden") || !detect_feedback.textContent.includes("库存文案")) throw new Error(`检测后应有反馈：${detect_feedback.textContent}`);
+
+// —— 删除：确认后写回 storage 并从列表移除 ——
+r1.querySelector('[n="detection-rule-remove"]').click();
+await new Promise((resolve) => setTimeout(resolve, 300));
+if (!globalThis.__confirm_messages.some((message) => message.includes("价格颜色"))) throw new Error("删除规则应先确认");
+const remaining = globalThis.__storage_writes["detection-rules"];
+if (!Array.isArray(remaining) || remaining.length !== 4) throw new Error(`删除后应剩 4 条规则：${JSON.stringify(remaining)}`);
+if (remaining.some((rule) => rule.id === "r1")) throw new Error("被删除的规则不应留在 storage");
+if (document.querySelectorAll(".detection-rule-row").length !== 4) throw new Error("删除后列表应少一行");
+if (document.querySelector("#detect-page .detect-count").textContent.trim() !== "共 4 条") throw new Error("计数应随删除更新");
+
+document.body.setAttribute("data-test-passed", "");
+</script></body></html>
