@@ -1,0 +1,118 @@
+<!doctype html><html data-n="test-document"><head data-n="test-head"><meta charset="utf-8">
+<link rel="stylesheet" href="../src/clip/clip.css" data-n="clip-style" />
+</head><body data-n="test-body">
+<main class="clip-root" data-n="clip-root" aria-label="区域剪藏结果"></main>
+<script data-n="test-stub">
+  // clip.js 顶层取 chrome.storage 与 location.search；导入前先把存储与 id 桩好。
+  const fragment = '<div style="all:initial!important;display:block!important">卡</div>';
+  const dirty = '<div style="all:initial!important"><img src="https://cdn.test/a.png" alt="外链"></div>';
+  const store = { "region-clips": [
+    { id: "c1", url: "https://example.com/a", title: "商品卡片", node: "div#card", hostname: "example.com", html: fragment,
+      width: 320, height: 128, element_count: 12, image_count: 3, image_missing: 1, byte_size: 4096,
+      options: { important: true, inline_images: true, materialize_pseudo: true }, created_at: 200 },
+    { id: "c3", url: "https://cdn.test/", title: "带外链的片段", html: dirty, element_count: 2, byte_size: 128, created_at: 100 },
+  ] };
+  globalThis.chrome = {
+    storage: {
+      local: {
+        get: async (keys) => {
+          const wanted = Array.isArray(keys) ? keys : [keys];
+          return Object.fromEntries(wanted.filter(Boolean).map((key) => [key, store[key]]));
+        },
+      },
+    },
+  };
+</script>
+<script type="module" data-n="test-script">
+window.addEventListener("error", (event) => document.body.setAttribute("data-test-error", `${event.message} @ ${event.lineno}:${event.colno}`));
+window.addEventListener("unhandledrejection", (event) => document.body.setAttribute("data-test-error", String((event.reason && event.reason.message) || event.reason)));
+
+const root = document.querySelector('[data-n="clip-root"]');
+const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// 每次换一个 id 就换一个模块实例（query 不同即不同 URL）：清空宿主后重新导入，顺带覆盖三种异常分支。
+async function open(id, tag) {
+  // 空串会被当作「沿用当前 URL」（查询串留在原地），必须显式给一个空查询串。
+  history.replaceState(null, "", id ? `?id=${id}` : "?");
+  root.textContent = "";
+  await import(`../src/clip/clip.js?${tag}`);
+  await wait(80);
+  return root;
+}
+
+// —— 正常记录：标题 / 地址 / 统计 / 源码 / sandbox 预览 / 自检 ——
+await open("c1", "ok");
+const title = root.querySelector(".clip-record-title");
+const url = root.querySelector(".clip-record-url");
+if (!title || title.textContent !== "商品卡片") throw new Error(`应显示记录标题：${title && title.textContent}`);
+if (!url || url.textContent !== "https://example.com/a") throw new Error(`应显示记录地址：${url && url.textContent}`);
+if (document.title !== "商品卡片 - 剪藏结果") throw new Error(`标签页标题应带记录名：${document.title}`);
+if (root.querySelector(".clip-stats").textContent.trim() !== "12 个元素 · 320×128 · 图片 3（缺失 1） · 4.0 KB") throw new Error(`统计文案错误：${root.querySelector(".clip-stats").textContent}`);
+
+const textarea = root.querySelector('[data-n="clip-source-html"]');
+if (!textarea) throw new Error("应显示源码");
+if (!textarea.readOnly) throw new Error("源码应只读");
+// 片段最外层不带宽高（提取时剥掉了），尺寸由结果页现写：默认记录原尺寸 320×128。
+const SIZED = '<div style="all:initial!important;display:block!important;width:320px!important;height:128px!important">卡</div>';
+const plain = '<div style="all:initial!important;display:block!important">卡</div>';
+if (textarea.value !== SIZED) throw new Error(`源码应是带原尺寸的片段：${textarea.value}`);
+if (!root.querySelector('[n="clip-copy-fragment"]') && !root.querySelector('[data-n="clip-copy-fragment"]')) throw new Error("应有复制片段按钮");
+if (!root.querySelector('[data-n="clip-copy-document"]')) throw new Error("应有复制完整文档按钮");
+
+const frame = root.querySelector('[data-n="clip-frame"]');
+if (!frame) throw new Error("应渲染预览 iframe");
+// preview.html 的 iframe 给 allow-same-origin（框选要读文档）；剪藏产出物无脚本，直接沙箱到最严。
+if (frame.getAttribute("sandbox") !== "") throw new Error(`预览 iframe 应为空 sandbox：${frame.getAttribute("sandbox")}`);
+if (!frame.srcdoc.includes("<!doctype html>")) throw new Error("srcdoc 应是完整文档");
+if (!frame.srcdoc.includes('style="all:initial!important;display:block!important')) throw new Error("srcdoc 应内嵌片段本身");
+if (!frame.srcdoc.includes(";width:320px!important;height:128px!important")) throw new Error(`srcdoc 应带记录原尺寸：${frame.srcdoc}`);
+if (!frame.srcdoc.includes("<body style=\"margin:0\">")) throw new Error("完整文档的 body 应内联清零 margin");
+
+const self_check = root.querySelector(".clip-self-check");
+if (!self_check || self_check.classList.contains("is-error")) throw new Error(`干净片段应通过自检：${self_check && self_check.textContent}`);
+if (!self_check.textContent.includes("自检通过")) throw new Error(`自检文案错误：${self_check.textContent}`);
+
+// —— 宽高：默认记录原尺寸；改一维只动一维；清空即交回宿主 ——
+const width_input = root.querySelector('[data-n="clip-size-width-input"]');
+const height_input = root.querySelector('[data-n="clip-size-height-input"]');
+if (!width_input || !height_input) throw new Error("应有宽高输入");
+if (width_input.value !== "320" || height_input.value !== "128") throw new Error(`宽高应默认记录原尺寸：${width_input.value}×${height_input.value}`);
+
+width_input.value = "500";
+width_input.dispatchEvent(new Event("input"));
+await wait(0);
+if (textarea.value !== '<div style="all:initial!important;display:block!important;width:500px!important;height:128px!important">卡</div>') throw new Error(`改宽度应只改宽度：${textarea.value}`);
+if (!frame.srcdoc.includes(";width:500px!important;height:128px!important")) throw new Error(`预览应跟着改：${frame.srcdoc}`);
+
+height_input.value = "";
+height_input.dispatchEvent(new Event("input"));
+await wait(0);
+if (textarea.value !== '<div style="all:initial!important;display:block!important;width:500px!important">卡</div>') throw new Error(`清空高度应只留宽度：${textarea.value}`);
+
+width_input.value = "";
+width_input.dispatchEvent(new Event("input"));
+await wait(0);
+if (textarea.value !== plain) throw new Error(`两维都留空应回到不带尺寸的片段：${textarea.value}`);
+if (!frame.srcdoc.includes(plain)) throw new Error(`预览应回到不带尺寸的片段：${frame.srcdoc}`);
+
+root.querySelector('[data-n="clip-size-reset"]').click();
+if (width_input.value !== "320" || height_input.value !== "128") throw new Error(`「原尺寸」应填回记录尺寸：${width_input.value}×${height_input.value}`);
+if (textarea.value !== SIZED) throw new Error(`「原尺寸」应把片段也写回去：${textarea.value}`);
+
+// —— 带外链的片段：自检必须点名拦截原因（结果页只展示，落库前的硬线在 SW）——
+await open("c3", "dirty");
+const dirty_check = root.querySelector(".clip-self-check");
+if (!dirty_check.classList.contains("is-error")) throw new Error(`带外链的片段应标红自检：${dirty_check.textContent}`);
+if (!dirty_check.textContent.includes("外链 src")) throw new Error(`自检应点名外链 src：${dirty_check.textContent}`);
+if (root.querySelector(".clip-record-title").textContent !== "带外链的片段") throw new Error("异常分支也应正常渲染记录");
+
+// —— 缺 id / 找不到记录 ——
+await open("", "no-id");
+if (!root.querySelector('[data-n="clip-empty"]')) throw new Error("缺 id 时应显示空状态");
+if (!root.querySelector('[data-n="clip-empty"]').textContent.includes("缺少剪藏记录 id")) throw new Error(`空状态文案错误：${root.querySelector('[data-n="clip-empty"]').textContent}`);
+
+await open("nope", "missing");
+if (!root.querySelector('[data-n="clip-empty"]').textContent.includes("找不到这条剪藏记录")) throw new Error(`找不到记录的文案错误：${root.querySelector('[data-n="clip-empty"]').textContent}`);
+
+document.body.setAttribute("data-test-passed", "");
+</script></body></html>

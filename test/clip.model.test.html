@@ -1,0 +1,359 @@
+<!doctype html><html data-n="test-document"><head data-n="test-head"><meta charset="utf-8">
+<style data-n="test-style">
+  html { background-color: rgb(250, 250, 252); }
+  body { margin: 0; }
+  #fixture { display: flex; flex-direction: column; gap: 8px; width: 320px; font-family: Arial, sans-serif; color: rgb(17, 17, 17); }
+  /* relative 是必须的：里面是绝对定位的兄弟，剪藏根不成为包含块，子节点就会挂到宿主身上。 */
+  #card { position: relative; padding: 12px; border: 2px solid rgb(0, 102, 204); background-color: rgb(245, 247, 250); }
+  #abs-parent { position: absolute; left: 0; top: 0; width: 80px; height: 40px; }
+  #abs-child { position: absolute; left: 4px; top: 4px; width: 20px; height: 10px; }
+  #hidden-box { visibility: hidden; }
+  #bullet { }
+  #bullet::before { content: "★ "; color: rgb(230, 0, 0); }
+  #bullet::after { content: " 尾"; }
+  #moving { position: sticky; top: 0; }
+  #fixed-child { position: fixed; left: 0; top: 0; }
+  #fixed-inside { position: fixed; left: 0; top: 0; }
+  #spinning { animation: dm-spin 1s linear infinite; transition: color .2s; }
+  @keyframes dm-spin { from { opacity: 1 } to { opacity: 0 } }
+  #spaced { letter-spacing: 3px; }
+</style>
+</head><body data-n="test-body">
+<div id="fixture" data-n="fixture">
+  <div id="card" data-n="card">
+    <span data-n="plain-child">子节点</span>
+    <div id="abs-parent" data-n="abs-parent"><div id="abs-child" data-n="abs-child">甲</div></div>
+    <div id="hidden-box" data-n="hidden-box">看不见</div>
+    <div id="fixed-inside" data-n="fixed-inside">内浮层</div>
+    <p id="bullet" data-n="bullet">要点</p>
+  </div>
+  <div id="moving" data-n="moving">吸顶</div>
+  <div id="fixed-child" data-n="fixed-child">浮层</div>
+  <div id="spinning" data-n="spinning">转</div>
+  <div id="spaced" data-n="spaced">字距</div>
+  <b id="bold" data-n="bold">粗</b>
+  <div id="rich" data-n="rich">
+    <script data-n="script">window.__dm_clip_ran = true;</script>
+    <a id="link" data-n="link" href="https://example.com/away" target="_blank" tabindex="0" onclick="window.__dm_clip_clicked = true">外链</a>
+    <img id="inline-img" data-n="inline-img" src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" alt="内联图" width="10" height="10">
+    <img id="broken-img" data-n="broken-img" src="__dm-clip-missing__.png" alt="取不到的图" width="24" height="24">
+    <canvas id="cv" data-n="canvas" width="40" height="20"></canvas>
+    <input id="field" data-n="field" type="text" value="已输入">
+    <div id="painted" data-n="painted" style="background-image: url('data:image/gif;base64,R0lGODlhAQABAAAAACw=')">背景图</div>
+    <div id="grad-host" data-n="grad-host">
+      <svg width="20" height="20" viewBox="0 0 10 10" data-n="svg">
+        <defs><linearGradient id="grad" data-n="gradient"><stop offset="0" stop-color="rgb(255, 0, 0)"></stop></linearGradient></defs>
+        <rect width="10" height="10" fill="url(#grad)" data-n="rect"></rect>
+      </svg>
+    </div>
+  </div>
+  <table id="table" data-n="table"><tbody data-n="tbody"><tr data-n="tr"><td id="cell" data-n="cell">单元格</td></tr></tbody></table>
+</div>
+<script type="module" data-n="test-script">
+window.addEventListener("error", (event) => document.body.setAttribute("data-test-error", `${event.message} @ ${event.lineno}:${event.colno} | ${(event.error && event.error.stack || "").split("\n").slice(1, 3).join(" ~ ").trim()}`));
+window.addEventListener("unhandledrejection", (event) => document.body.setAttribute("data-test-error", String((event.reason && event.reason.message) || event.reason)));
+import { build_clip_document, clip_options_key, clips_key, default_clip_options, extract_clip, normalize_clip_options, normalize_clip_records, size_clip_fragment, verify_no_external_refs } from "../src/clip/clip.model.js";
+
+const query = (name) => document.querySelector(`[data-n="${name}"]`);
+const frozen_of = (html) => new DOMParser().parseFromString(html, "text/html");
+const in_frozen = (result, name) => frozen_of(result.html).querySelector(`[data-n="${name}"]`);
+const declare = (element) => element.getAttribute("style") || "";
+const has_declaration = (element, property) => new RegExp(`(^|;)\\s*${property}\\s*:`).test(declare(element));
+// Chrome 的 CSSOM 会把完整的简写组合并着序列化（left/top/right/bottom → inset、四条边框 → border-width），
+// 语义没变、形式变了，所以文字断言要容忍简写；精确的判定交给后面的「几何保真」段。
+const has_any_declaration = (element, properties) => properties.some((property) => has_declaration(element, property));
+
+async function clip(selector, options) {
+  const element = document.querySelector(selector);
+  const uuid = `test-${Math.random().toString(16).slice(2)}`;
+  element.setAttribute("data-dm-clip-target", uuid);
+  const result = await extract_clip(uuid, options);
+  if (!result.ok) throw new Error(`提取 ${selector} 失败：${result.error}`);
+  return { result, element, frozen: frozen_of(result.html) };
+}
+
+// 夹具里的 <script> / onclick 在本页加载时就会各跑一次：先清零。
+// 之后任何一次重跑（例如把产出物插回文档）都说明剪藏没把可执行内容剔干净。
+window.__dm_clip_ran = false;
+window.__dm_clip_clicked = false;
+
+// 画点东西，canvas 才有 toDataURL 输出。
+const canvas = query("canvas");
+const context = canvas.getContext("2d");
+context.fillStyle = "rgb(0, 128, 255)";
+context.fillRect(0, 0, 40, 20);
+
+// —— 存储键与选项 ——
+if (clips_key !== "region-clips" || clip_options_key !== "clip-options") throw new Error("存储键不符");
+const defaults = default_clip_options();
+if (defaults.important !== true || defaults.inline_images !== true || defaults.materialize_pseudo !== true) throw new Error("默认选项应为全开");
+const narrowed = normalize_clip_options({ important: false, inline_images: false });
+if (narrowed.important !== false || narrowed.inline_images !== false || narrowed.materialize_pseudo !== true) throw new Error("选项应逐项归一");
+if (normalize_clip_options(null).important !== true || normalize_clip_options("x").inline_images !== true) throw new Error("非法选项应回落到默认");
+
+// —— verify_no_external_refs：外部资源 / 可执行内容的硬性自检 ——
+const clean = '<div style="all:initial!important"><img src="data:image/gif;base64,R0lGODlh" alt="a"><span>文字</span></div>';
+if (!verify_no_external_refs(clean).ok) throw new Error(`干净片段应通过自检：${JSON.stringify(verify_no_external_refs(clean).hits)}`);
+const dirty = [
+  ['<div style="background-image: url(https://a.test/x.png)"></div>', "url() 外链"],
+  ['<img src="http://a.test/x.png">', "src 外链"],
+  ['<img src="//a.test/x.png">', "协议相对 src"],
+  ['<a href="https://a.test/">x</a>', "href 外链"],
+  ['<img srcset="https://a.test/x.png 1x">', "srcset"],
+  ['<style>@import url(x.css)</style>', "@import"],
+  // 注意 `<\/script>`：内联脚本里不能出现字面的结束标签，否则整个模块会被 HTML 解析器截断。
+  ['<script>alert(1)<\/script>', "script 标签"],
+  ['<link rel="stylesheet" href="x.css">', "link 标签"],
+  ['<div onclick="alert(1)"></div>', "内联事件"],
+  ['<iframe src="about:blank"></iframe>', "iframe"],
+  ['<video><source src="x.mp4"></video>', "video/source"],
+];
+for (const [html, label] of dirty) {
+  if (verify_no_external_refs(html).ok) throw new Error(`${label} 应被自检拦下`);
+}
+if (!verify_no_external_refs('<div data-src="x" data-once="1">文字</div>').ok) throw new Error("data-* 属性不应误判");
+
+// —— normalize_clip_records ——
+const records = normalize_clip_records([
+  { id: "b", html: "<div>乙</div>", url: "https://b.test/p", created_at: 2 },
+  { id: "a", html: "<div>甲</div>", url: "https://a.test/", title: " 甲页 ", created_at: 1 },
+  { id: "b", html: "<div>重复</div>", created_at: 9 },
+  { id: "c", html: "", created_at: 3 },
+  { html: "<div>无 id</div>" },
+  null,
+]);
+if (records.length !== 2) throw new Error(`应保留 2 条合法记录：${records.length}`);
+if (records[0].id !== "b" || records[1].id !== "a") throw new Error("应按时间倒序");
+if (records[1].title !== "甲页" || records[1].hostname !== "a.test") throw new Error(`应补标题与 hostname：${JSON.stringify(records[1])}`);
+if (records[0].title !== "https://b.test/p") throw new Error("无标题时用 url 兜底");
+if (records[0].byte_size !== 0 || records[0].image_count !== 0) throw new Error("缺失的统计字段应为 0");
+
+// —— build_clip_document ——
+const sample = { html: "<div>片段</div>", title: "标题 <&>", url: "https://a.test/" };
+if (build_clip_document(sample) !== "<div>片段</div>") throw new Error("默认应返回片段本身");
+const full = build_clip_document(sample, { full: true });
+if (!full.startsWith("<!doctype html>") || !full.includes("<body style=\"margin:0\">") || !full.includes("<div>片段</div>")) throw new Error("完整文档形态不符");
+if (full.includes("标题 <&>")) throw new Error("标题应转义");
+
+// —— size_clip_fragment：给最外层写尺寸 ——
+const bare = '<div style="all:initial!important;display:block!important">卡</div>';
+if (size_clip_fragment(bare, 0, 0) !== bare) throw new Error("不给尺寸应原样返回");
+if (size_clip_fragment(bare, "", "") !== bare) throw new Error("空尺寸应原样返回");
+if (!size_clip_fragment(bare, 500, 0).includes(';width:500px!important">')) throw new Error(`只给宽就只写宽：${size_clip_fragment(bare, 500, 0)}`);
+const both = size_clip_fragment(bare, 320, 128);
+if (!both.includes(';width:320px!important;height:128px!important">')) throw new Error(`宽高应写在样式末尾：${both}`);
+// 写回的是同一棵子树（不能被 DOMParser 改结构）。
+if (frozen_of(both).querySelector("div").textContent !== "卡") throw new Error("定尺寸不应动内容");
+if (!verify_no_external_refs(both).ok) throw new Error("定尺寸后的片段仍应通过自检");
+// 老记录里可能已经带着宽高（比如本页夹具那种内联写法）→ 后写的同属性声明必须取胜。
+const legacy = '<div style="width:100px!important;height:50px!important">旧</div>';
+const resized = size_clip_fragment(legacy, 640, 480);
+if (!/width:640px!important;height:480px!important"/.test(resized)) throw new Error(`新尺寸应压过片段里原有的宽高：${resized}`);
+
+// —— extract_clip：#card 主体 ——
+const card = await clip('[data-n="card"]');
+const html = card.result.html;
+const wrapper = card.frozen.body.firstElementChild;
+if (!/all:\s*initial\s*!important/.test(declare(wrapper))) throw new Error(`产出根应是 all:initial 的包裹层：${declare(wrapper)}`);
+if (!/display:\s*block\s*!important/.test(declare(wrapper))) throw new Error("包裹层应显式 block");
+if (card.frozen.body.children.length !== 1) throw new Error("产出物只应有一个根元素");
+if (/class=/.test(html)) throw new Error("class 不复制（宿主选择器会命中我们）");
+if (/<script/i.test(html)) throw new Error("script 必须移除");
+if (/<style|<link|<iframe/i.test(html)) throw new Error("样式表 / 嵌入式标签必须移除");
+if (/\son[a-z]+\s*=/i.test(html)) throw new Error("内联事件必须移除");
+if (/href=/.test(html)) throw new Error("HTML 的 href 必须移除（不支持跳转）");
+if (document.querySelector("[data-dm-clip-target]")) throw new Error("提取后应清掉页面上的临时标记");
+const checked = verify_no_external_refs(html);
+if (!checked.ok) throw new Error(`产出物未通过自检：${JSON.stringify(checked.hits)}`);
+
+// 根的继承属性要落地（否则会被宿主的 body 规则影响）。
+const frozen_card = card.frozen.querySelector("[data-n='card']");
+if (!has_declaration(frozen_card, "font-family")) throw new Error("根应写入继承来的 font-family");
+if (!/Arial, sans-serif/.test(declare(frozen_card))) throw new Error(`font-family 应带通用兜底：${declare(frozen_card)}`);
+// 最外层刻意不冻结宽高：冻结了就被钉死在抓取时的尺寸里，放哪儿都改不了（尺寸由结果页按需写）。
+if (has_declaration(frozen_card, "width") || has_declaration(frozen_card, "height")) throw new Error(`最外层不应冻结宽高：${declare(frozen_card)}`);
+// 真实产出物配结果页的尺寸：写进去的就是结果页要的那一版。
+if (!size_clip_fragment(html, 320, 128).includes(';width:320px!important;height:128px!important">')) throw new Error("真实产出物也应能定尺寸");
+// 子节点的继承属性与父相同 → 不写（差分生效）。
+const plain_child = in_frozen(card.result, "plain-child");
+if (has_declaration(plain_child, "font-family") || has_declaration(plain_child, "color")) throw new Error(`继承属性与父相同不应重复写入：${declare(plain_child)}`);
+// 非继承属性：父子都是 absolute，子节点必须保留自己的绝对定位（只比父会漏写）。
+const abs_child = in_frozen(card.result, "abs-child");
+if (!/position:\s*absolute/.test(declare(abs_child))) throw new Error(`父为 absolute 时子节点也要写 position：${declare(abs_child)}`);
+if (!has_any_declaration(abs_child, ["left", "inset", "inset-inline", "inset-inline-start"])) throw new Error(`子节点的 left 应保留：${declare(abs_child)}`);
+// 非继承属性的初始值判定：visibility 被子节点继承（值相同 → 不写）。
+const hidden_box = in_frozen(card.result, "hidden-box");
+if (!/visibility:\s*hidden/.test(declare(hidden_box))) throw new Error(`visibility 应写入：${declare(hidden_box)}`);
+// 元素自身的非继承属性（b / letter-spacing 都是 #card 的兄弟，各自单独剪一次）。
+const bold = await clip('[data-n="bold"]');
+if (!/font-weight:\s*(700|bold)/.test(declare(bold.frozen.querySelector("[data-n='bold']")))) throw new Error("b 的 font-weight 应写入");
+const spaced = await clip('[data-n="spaced"]');
+if (!/letter-spacing:\s*3px/.test(declare(spaced.frozen.querySelector("[data-n='spaced']")))) throw new Error("letter-spacing 应保留");
+
+// —— 伪元素实体化 ——
+const bullet = in_frozen(card.result, "bullet");
+const spans = bullet.querySelectorAll("span");
+if (spans.length !== 2) throw new Error(`::before/::after 应各实体化成一个 span：${spans.length}`);
+if (spans[0].textContent !== "★ " || spans[1].textContent !== " 尾") throw new Error(`伪元素文本不符：${JSON.stringify([spans[0].textContent, spans[1].textContent])}`);
+if (!/color:\s*rgb\(230,\s*0,\s*0\)/.test(declare(spans[0]))) throw new Error(`::before 应带自己的颜色：${declare(spans[0])}`);
+if (has_declaration(spans[0], "content")) throw new Error("content 属性对普通元素无效，不应写出");
+if (!/background-color:\s*rgb\(245,\s*247,\s*250\)/.test(declare(frozen_card))) throw new Error(`背景色应冻结：${declare(frozen_card)}`);
+if (!has_any_declaration(frozen_card, ["border-top-width", "border-width", "border"])) throw new Error(`边框应冻结：${declare(frozen_card)}`);
+
+// —— position / 动画的降级与清空 ——
+const fixed_inside = in_frozen(card.result, "fixed-inside");
+if (!/position:\s*absolute/.test(declare(fixed_inside))) throw new Error(`后代的 fixed 应降级为 absolute：${declare(fixed_inside)}`);
+const moving = await clip('[data-n="moving"]');
+if (!/position:\s*relative/.test(declare(moving.frozen.querySelector("[data-n='moving']")))) throw new Error("根节点 sticky 应降级为 relative");
+const fixed = await clip('[data-n="fixed-child"]');
+if (!/position:\s*relative/.test(declare(fixed.frozen.querySelector("[data-n='fixed-child']")))) throw new Error("根节点 fixed 应降级为 relative（脱离视口定位）");
+const spinning = await clip('[data-n="spinning"]');
+const spinning_style = declare(spinning.frozen.querySelector("[data-n='spinning']"));
+if (!/animation-name:\s*none/.test(spinning_style) || !/transition:\s*none/.test(spinning_style)) throw new Error(`动画/过渡应清空：${spinning_style}`);
+
+// —— important 开关 ——
+const soft = await clip('[data-n="card"]', { important: false });
+const soft_card = soft.frozen.querySelector("[data-n='card']");
+if (/background-color:[^;]*!important/.test(declare(soft_card))) throw new Error("important:false 时普通声明不应带 !important");
+
+// —— 宿主免疫 + 几何保真：把产出物扔进「敌对」宿主，位置/尺寸/关键计算值必须与实时页面一致 ——
+// 这是「不被其他内容影响」的正面验证：宿主规则照 Tailwind preflight 那种最凶的写法来
+//（`*` 通配 + !important + box-sizing/font/position 全覆盖），一条都不该落到产出物身上。
+const hostile = document.createElement("style");
+hostile.textContent = [
+  "#dm-hostile, #dm-hostile * {",
+  "  box-sizing: border-box !important; display: block !important; position: static !important;",
+  "  color: rgb(255, 0, 0) !important; background-color: rgb(0, 255, 0) !important;",
+  "  border: 5px solid rgb(0, 0, 255) !important; font-family: 'Courier New' !important;",
+  "  font-size: 33px !important; line-height: 5 !important; letter-spacing: 9px !important;",
+  "  padding: 25px !important; margin: 25px !important; visibility: hidden !important;",
+  "  max-width: 10px !important; overflow: hidden !important; }",
+].join("\n");
+document.head.appendChild(hostile);
+const holder = document.createElement("div");
+holder.id = "dm-hostile";
+holder.setAttribute("style", "position: fixed; left: -10000px; top: 0; width: 1000px;");
+document.body.appendChild(holder);
+holder.innerHTML = html;
+const immune = holder.querySelector("[data-n='card']");
+if (!immune) throw new Error("产出物没能塞进宿主文档");
+// 用解析器（而不是正则）确认插回文档的副本里没有可执行 / 外引资源的东西。
+if (holder.querySelectorAll("script, iframe, object, embed, link, style, noscript, template, audio, video").length) throw new Error("产出物里不该有可执行 / 引资源的标签");
+if (holder.querySelector("[onclick], [href], [srcset], [tabindex]")) throw new Error("产出物里不该有交互 / 外部资源属性");
+
+const immune_style = getComputedStyle(immune);
+if (immune_style.visibility !== "visible") throw new Error(`宿主的 visibility 命中了产出物：${immune_style.visibility}`);
+if (immune_style.fontFamily !== "Arial, sans-serif") throw new Error(`宿主的 font-family 命中了产出物：${immune_style.fontFamily}`);
+if (immune_style.fontSize !== "16px") throw new Error(`宿主的 font-size 命中了产出物：${immune_style.fontSize}`);
+if (immune_style.letterSpacing !== "normal") throw new Error(`宿主的 letter-spacing 命中了产出物：${immune_style.letterSpacing}`);
+if (immune_style.backgroundColor !== "rgb(245, 247, 250)") throw new Error(`宿主的 background 命中了产出物：${immune_style.backgroundColor}`);
+if (immune_style.color !== "rgb(17, 17, 17)") throw new Error(`宿主的 color 命中了产出物：${immune_style.color}`);
+if (immune_style.boxSizing !== "content-box") throw new Error("宿主的 box-sizing 命中了产出物");
+const immune_abs = holder.querySelector("[data-n='abs-child']");
+if (getComputedStyle(immune_abs).position !== "absolute") throw new Error("宿主的 position 命中了绝对定位子节点");
+if (getComputedStyle(immune_abs).left !== "4px") throw new Error(`子节点的 left 应保留：${declare(immune_abs)}`);
+if (getComputedStyle(immune_abs).borderTopWidth !== "0px") throw new Error("宿主的 border 命中了没边框的子节点");
+if (getComputedStyle(holder.querySelector("[data-n='hidden-box']")).visibility !== "hidden") throw new Error("visibility:hidden 应保留");
+const immune_spans = holder.querySelector("[data-n='bullet']").querySelectorAll("span");
+if (getComputedStyle(immune_spans[0]).display !== "inline") throw new Error("宿主把伪元素 span 撑成了块级");
+if (getComputedStyle(immune_spans[0]).color !== "rgb(230, 0, 0)") throw new Error("伪元素的颜色应保留");
+if (getComputedStyle(immune_spans[0]).fontFamily !== "Arial, sans-serif") throw new Error("伪元素应从冻结后的父节点继承字体");
+
+// 几何保真：逐节点比 [x, y, w, h]（相对各自的根）。fixed/sticky 被降级后必然换参照系，按 position 变化跳过。
+// 根节点只比位置：宽高不冻结，于是它跟着宿主容器走（这正是「可在结果页设宽高」的前提）。
+const live_card = query("card");
+const box_of = (element, base) => {
+  const rect = element.getBoundingClientRect();
+  return [Math.round(rect.left - base.left), Math.round(rect.top - base.top), Math.round(rect.width), Math.round(rect.height)];
+};
+const live_base = live_card.getBoundingClientRect();
+const frozen_base = immune.getBoundingClientRect();
+const geometry = [[live_card, immune, "根节点", 2]];
+for (const live_element of live_card.querySelectorAll("[data-n]")) {
+  const name = live_element.getAttribute("data-n");
+  const frozen_element = immune.querySelector(`[data-n="${name}"]`);
+  if (!frozen_element) throw new Error(`产出物里缺少 ${name}`);
+  geometry.push([live_element, frozen_element, name, 4]);
+}
+for (const [live_element, frozen_element, label, limit] of geometry) {
+  if (getComputedStyle(live_element).position !== getComputedStyle(frozen_element).position) continue;
+  const before = box_of(live_element, live_base);
+  const after = box_of(frozen_element, frozen_base);
+  for (let index = 0; index < limit; index += 1) {
+    if (Math.abs(before[index] - after[index]) > 1) throw new Error(`${label} 的几何对不上：实时 ${JSON.stringify(before)} vs 冻结 ${JSON.stringify(after)}`);
+  }
+}
+
+// —— 资源：data URL 直通、取不到的退占位 ——
+// 图片 / canvas / 表单 / SVG 都在 #rich 里（#card 的兄弟），单独剪一份。
+const rich = await clip('[data-n="rich"]');
+const inline_img = in_frozen(rich.result, "inline-img");
+if (!/^data:image\/gif/.test(inline_img.getAttribute("src") || "")) throw new Error("data URL 图片应原样保留");
+if (has_declaration(inline_img, "background-image")) throw new Error("取到的图片不应加占位底纹");
+const broken_img = in_frozen(rich.result, "broken-img");
+if (broken_img.hasAttribute("src")) throw new Error("取不到的图片不能留 src（会引外部请求）");
+if (!/repeating-linear-gradient/.test(declare(broken_img))) throw new Error(`取不到的图片应退化成占位块：${declare(broken_img)}`);
+const painted = in_frozen(rich.result, "painted");
+if (!/url\("data:image\/gif/.test(declare(painted))) throw new Error(`data URL 背景应直通：${declare(painted)}`);
+
+// —— canvas 转 data URL ——
+const frozen_canvas = in_frozen(rich.result, "canvas");
+if (!frozen_canvas || frozen_canvas.tagName !== "IMG") throw new Error("canvas 应转成 img");
+if (!/^data:image\/png/.test(frozen_canvas.getAttribute("src") || "")) throw new Error("canvas 应转成 png data URL");
+
+// —— 表单控件：禁用 + 冻结当前值 ——
+const field = in_frozen(rich.result, "field");
+if (field.getAttribute("value") !== "已输入" || !field.hasAttribute("disabled")) throw new Error(`输入框应冻结当前值并禁用：${field.outerHTML}`);
+
+// —— SVG：#id 引用随 id 前缀一起重写 ——
+const rect = in_frozen(rich.result, "rect");
+const frozen_gradient = in_frozen(rich.result, "gradient");
+if (!frozen_gradient) throw new Error("SVG 渐变定义应保留");
+const gradient_id = frozen_gradient.getAttribute("id");
+if (!gradient_id || gradient_id === "grad" || gradient_id.indexOf("dmc-") !== 0) throw new Error(`id 应加唯一前缀：${gradient_id}`);
+if (rect.getAttribute("fill") !== `url(#${gradient_id})`) throw new Error(`fill 的 url(#id) 应同步重写：${rect.getAttribute("fill")}`);
+
+// —— 语境标签：td 要带上 table/tbody/tr 祖先链 ——
+const cell = await clip('[data-n="cell"]');
+if (!/<table/i.test(cell.result.html) || !/<tbody/i.test(cell.result.html) || !/<tr/i.test(cell.result.html)) throw new Error(`td 应补上语境祖先：${cell.result.html.slice(0, 200)}`);
+if (!/<td/i.test(cell.result.html)) throw new Error("td 本身要保留");
+
+// —— html/body 折叠：标签会被宿主解析器拆掉，且整页背景要借过来 ——
+const body_clip = await clip("body");
+if (/<body/i.test(body_clip.result.html) || /<html/i.test(body_clip.result.html)) throw new Error("body/html 不应作为标签出现在片段里");
+if (!body_clip.result.html.includes('data-n="card"')) throw new Error("折叠后 body 的子节点要保留");
+if (!/background-color:\s*rgb\(250,\s*250,\s*252\)/.test(declare(body_clip.frozen.body.firstElementChild))) throw new Error("整页背景应借到包裹层上");
+// 折叠后包裹层就是片段最外层，同样不带宽高。
+if (has_declaration(body_clip.frozen.body.firstElementChild, "width") || has_declaration(body_clip.frozen.body.firstElementChild, "height")) throw new Error(`折叠后的最外层不应冻结宽高：${declare(body_clip.frozen.body.firstElementChild)}`);
+if (!/<a/i.test(body_clip.result.html)) throw new Error("a 标签本身应保留（只去掉交互）");
+if (/<a[^>]*\shref=/i.test(body_clip.result.html)) throw new Error("a 的 href 应移除");
+if (/tabindex=|onclick=/i.test(body_clip.result.html)) throw new Error("交互属性应移除");
+if (/<script/i.test(body_clip.result.html)) throw new Error("script 应移除");
+if (window.__dm_clip_ran || window.__dm_clip_clicked) throw new Error("被剪的内容不得执行");
+if (!verify_no_external_refs(body_clip.result.html).ok) throw new Error(`整体产出应通过自检：${JSON.stringify(verify_no_external_refs(body_clip.result.html).hits)}`);
+
+// —— 元素数上限：不因超大选区把浏览器卡死 ——
+const huge = document.createElement("div");
+for (let index = 0; index < 12; index += 1) huge.appendChild(document.createElement("i"));
+huge.setAttribute("data-n", "huge");
+document.body.appendChild(huge);
+const huge_uuid = "test-huge";
+huge.setAttribute("data-dm-clip-target", huge_uuid);
+const huge_result = await extract_clip(huge_uuid, {});
+if (!huge_result.ok || huge_result.stats.elements !== 13) throw new Error(`元素计数应为 13：${JSON.stringify(huge_result.stats)}`);
+huge.remove();
+
+// —— clip_region：选择器装上 / Esc 卸下 ——
+const { clip_region } = await import("../src/clip/clip.model.js");
+const picker_result = clip_region({});
+if (!picker_result || picker_result.ok !== true) throw new Error("选择器应同步返回 ok");
+const host = document.getElementById("dm-clip-picker");
+if (!host) throw new Error("选择器宿主应挂到文档上");
+if (host.shadowRoot === null || !host.shadowRoot.querySelector(".bar")) throw new Error("选择器 UI 应装在 Shadow DOM 里");
+if (document.documentElement.style.getPropertyValue("cursor") !== "crosshair") throw new Error("选择器应给出十字光标");
+document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+if (document.getElementById("dm-clip-picker")) throw new Error("Esc 应卸掉选择器");
+if (document.documentElement.style.getPropertyValue("cursor")) throw new Error("Esc 后应还原页面光标");
+
+document.body.setAttribute("data-test-passed", "");
+</script></body></html>

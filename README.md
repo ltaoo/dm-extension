@@ -1,9 +1,10 @@
 # Download & Manage 浏览器扩展
 
-Chrome（138+）Manifest V3 扩展，提供三块能力：
+Chrome（138+）Manifest V3 扩展，提供以下能力：
 
 - **Cookie**：在弹窗中查看当前站点 Cookie（含 HttpOnly），勾选后复制为 `name=value; ...`。
 - **对比**：暂存当前标签页移除 `script` 后的 HTML（可复制到粘贴板），并在新标签页对**当前选中分组**按「每条记录与其前一条对比」横向渲染、高亮差异并列出新增/移除清单。
+- **剪藏**：在实时页面上框选一块内容，把它的内容与当前样式一起冻结成一段自包含 HTML（无 `script`、无外部引用、纯内联样式），粘到任意页面里都按原样显示。
 - **设置**：管理多个 Cookie 同步接口配置（地址、域名范围、加密、定时），以及 SavePage 的域名 → 解析器映射。
 
 无构建步骤、无 CDN、无依赖安装，本目录即为可加载的完整扩展。
@@ -28,6 +29,20 @@ Chrome（138+）Manifest V3 扩展，提供三块能力：
 飞书文档（`*.feishu.cn` / `*.feishu-doc.cn` / `*.larksuite.com` / `*.larkoffice.com`）会额外提取资源：图片取 `img[src]` 与 `data-src` 懒加载图；视频取 `video[src]`、`source[src]` 及视频扩展名的 `data-src`；文件取带 `download`、常见附件扩展名或飞书资源地址的链接。界面元素（头像、表情、工具栏等）按类名关键字排除。识别结果按文档顺序编号，同名资源复用首次编号，页面对应节点替换为 `{{IMAGE:1}}` / `{{VIDEO:1}}` / `{{FILE:1}}` 占位符。
 
 自建域名部署的飞书不落在 `*.feishu.cn` 上。设置页「SavePage 解析」提供域名 → 解析器映射：每行一个域名 + 解析器（飞书文档 / 通用），`example.com` 匹配自身及所有子域，也接受 `*.example.com` 或完整 URL。默认内置 `larkenterprise.com → 飞书文档`；上述飞书官方域名始终按飞书文档解析。未匹配的域名走「通用」。规则保存在 `chrome.storage.local` 的 `page-parsers` 键下，切换规则后点「重新获取」重新解析。
+
+### 剪藏
+
+在弹窗「剪藏」页点「框选剪藏」→ 弹窗自动关闭、页面进入挑选状态：鼠标移动即高亮候选节点（所见即所得），拖动框选一块区域（单击则取该点最深的元素），↑ / ↓ 沿祖先链在父 / 子容器间切换（轮廓与标签实时更新），回车剪藏、Esc 取消。点「剪藏」后页面下方显示进度，完成后**结果页自动打开** —— 只能由后台 SW 打开：用户确认时弹窗早已关闭，页面自己没有开标签页的权限。挑选界面整个收在页面上的 Shadow DOM 里（宿主固定定位、`pointer-events:none`，事件在 `document` 上捕获），页面 CSS 影响不到它，它也不会漏到页面上；确认后给选中节点打一个临时标记属性（`data-dm-clip-target`），后台据此把提取函数注入该标签页的**默认 ISOLATED world** 执行。剪藏不跑任何用户代码，因此**不需要**「允许用户脚本」，也不需要沙箱页。
+
+产出物是**自包含片段**：零 `<style>` / `<link>` / `<script>`、零 http(s) 引用、纯内联样式。做法是把 `getComputedStyle` 的 used value 逐元素写进 `style` 属性 —— 等于给选区拍一张「布局已结算」的静态快照，而不是复制样式表（选择器是全局的，复制过去会污染宿主；class 常是哈希或自动生成的，跨快照不稳）。为了压住体积，每个元素只写**与父节点不同**的部分：继承属性与父的计算值比、非继承属性与浏览器初始值比，相同就不写（初始值表由页面上临时挂的探针元素 `all:initial!important` 现取，内联 `!important` 高于任何作者样式表，因此可信）。省写的前提是「没写 = 初始值」，而宿主可能自带 `*{box-sizing:border-box}`、`img{max-width:100%}` 甚至 `*{…!important}`（Tailwind preflight 就是），于是每条 `style` 的最前面再加一条 `all:unset`（根节点是 `all:initial`），把这条前提变成事实：宿主的规则再也命中不到我们没写出来的属性。最外层包一层 `all:initial` 的 `div` 切断宿主继承（字体、颜色、行高、`direction`），根节点顺便补 `display:block`。片段最外层的**宽高不冻结**（`html` / `body` 折叠时那个包裹层同理）：冻上了就被钉死在抓取那一刻的尺寸里，放哪儿都改不了；尺寸改由结果页按需写进产出物，不写就随宿主自适应。**不受目标页面影响**这一条有测试兜底：把产出物塞进一个用 `!important` 的 `*` 规则（`box-sizing` / `display` / `position` / 颜色 / 边框 / 字体 / `visibility` / `max-width` / `overflow`）全面进攻的宿主里，逐元素比对计算样式与几何，必须与实时页面逐位一致。
+
+片段里还有一些保真处理：图片与 `background-image` 等 `url(...)` 尽量 `fetch → blob → FileReader` 内联成 data URL（单图 4MB、总计 24MB、最多 60 张），取不到的图片换成**同尺寸**的斜纹占位块并在 `title` 里注明；`<canvas>` 用 `toDataURL` 换成 `<img>`；`::before` / `::after` 有内容时实体化成真实子标签（带自己的差分样式）；`position:fixed` 的后代降级为 `absolute`（根为 `relative`）、`background-attachment:fixed` 降级为 `scroll`；表格单元格 / 列表项等**语境标签**单独成根时自动补上祖先链（最多 4 层），免得粘进表格 / 列表后错位；重复 `id` 统一加 `dmc-<8 位>-` 前缀并同步重写 `url(#x)` / `href` / `for` / `aria-*`；表单控件冻结当前值并统一 `disabled`（不支持交互）；`transition` / `animation` 一律清空，`content`、`cursor` 这类写进去没有意义的属性直接跳过。
+
+「零外部引用、零可执行内容」是一条**硬线**：后台在落库前用同一套规则再验一遍（外链 `url()` / `src` / `href` / `srcset` / `@import`、`<script>` 与 `style` / `link` / `iframe` / `video` 等资源标签、内联 `on*`），命中就**整条不保存**并回报原因 —— 宁可这次不存，也不留一个会去拉外部资源的片段；结果页也会显示同一条自检的结论，产出物一旦被改写会标红并点名是哪一条。
+
+结果页（`src/clip/clip.html`）给出标题 / 地址 / 统计（元素数、宽×高、图片数与缺失数、体积）、`sandbox=""` 的 iframe 预览（产出物没有任何脚本，所以连 `allow-same-origin` 都不给）、只读源码，以及「复制片段」「复制完整文档」两个按钮（完整文档会补 `<!doctype>`、标题与 `body{margin:0}`，仍是零外部引用）。预览上方是**宽 / 高**两个输入框（默认记录的原尺寸，「原尺寸」按钮可一键复原）：改动即时写进片段最外层元素的 `style` 末尾（后写的同属性声明压过片段里原有的宽高），预览 / 源码 / 两个复制按钮**同源**，看到的就是复制到的那一版；留空的那一维随宿主自适应，两维都留空就是完全流体，且**不回写**存储里的记录。弹窗「剪藏」页列出全部记录：点标题在新标签页打开结果页、「复制」把片段写入剪贴板（按钮短暂显示「已复制」；复制的是存储里的原始片段，即不带尺寸的那一版，与结果页上设的尺寸互不影响）、「删除」单条（有确认）、「清空」全部（有确认）。三个选项开关决定**下次**剪藏的形态：样式加 `!important`（默认开，宿主规则更难得手）、图片内联为 data URL（默认开，关掉则一律用同尺寸占位块）、还原 `::before` / `::after`（默认开）。记录与选项分别存在 `chrome.storage.local` 的 `region-clips` / `clip-options` 键下，条数上限 100（新的在前，超出丢弃最旧的），记录里带 HTML，因此需要 `unlimitedStorage`。
+
+已知边界（一期不做）：带滚动条的容器不还原滚动位置（`overflow` 非 `visible` 时内容回到顶部）；跨出选区的绝对定位后代仍按原包含块换算（可能跑到片段外）；不内嵌字体（图标字体的字形会变豆腐块，`font-family` 保留通用兜底族名）；`::marker` / `::placeholder` 等其它伪元素不还原。
 
 ### 变更检测
 
@@ -102,9 +117,10 @@ Chrome（138+）Manifest V3 扩展，提供三块能力：
 manifest.json        # Manifest V3 配置
 src/background.js    # Service Worker：消息与 alarm 事件
 src/popup/           # 弹窗入口（popup.html/js/css），左侧菜单 + 右侧子页面
-src/pages/           # cookie.js / savepage.js / detect.js / settings.js 四个页面 View
+src/pages/           # cookie.js / savepage.js / clip.js / detect.js / settings.js 五个页面 View
 src/models/          # store.js（导航与业务状态）、sync.model.js（配置校验、加密、定时任务）
 src/compare/         # compare.js/preview.js（对比页与单页预览渲染、连续框选交互、提取测试）、compare.model.js（逐对 diff）、detection.model.js（变更检测规则：选择器构建、列表/详情判定、用户脚本注入代码生成、列表对比按键 diff 与基线归一）、extract.sandbox.html（沙箱执行器：扩展里唯一能跑用户函数的地方）
+src/clip/            # clip.html/js/css（剪藏结果页）、clip.model.js（页内选择器 + 计算样式差分冻结 + 记录读写 + 零外部引用自检）
 assets/vendor/       # Timeless 0.33.0 运行时、dmui 组件、CryptoJS 4.2.0 独立副本
 assets/icons/        # 全尺寸扩展图标
 scripts/             # 图标导出与 UI 资产同步脚本
@@ -116,7 +132,9 @@ scripts/             # 图标导出与 UI 资产同步脚本
 
 ## 权限
 
-`activeTab`、`cookies`、`scripting`、`userScripts`、`storage`、`alarms`、`clipboardWrite`，以及对 HTTP(S) 站点的 host 权限（读取 Cookie、访问用户指定的同步接口）。
+`activeTab`、`cookies`、`scripting`、`userScripts`、`storage`、`unlimitedStorage`、`alarms`、`clipboardWrite`，以及对 HTTP(S) 站点的 host 权限（读取 Cookie、访问用户指定的同步接口）。
+
+`unlimitedStorage` 给剪藏用：每条剪藏都是一份内联了样式（可能还有 data URL 图片）的 HTML，`chrome.storage.local` 默认配额放不下。
 
 `userScripts` 用于执行用户脚本检测规则（JS 函数 / 列表对比）：Chrome 138 起用户还需在扩展详情页手动打开「允许用户脚本」，否则 `chrome.userScripts` 为 `undefined`，这两类规则置灰。
 
@@ -124,10 +142,12 @@ scripts/             # 图标导出与 UI 资产同步脚本
 
 ## 开发检查
 
-本目录无构建命令。测试用的 HTML 依赖 ES module 动态导入，`file://` 下会被 CORS 拦掉，需在仓库根起一个静态服务（如 `python3 -m http.server 8791`）后访问 `http://127.0.0.1:8791/test/<文件>`；断言通过时给 `body` 加 `data-test-passed`，抛错时加 `data-test-error`。改动 ES module 后在浏览器里重跑测试要先禁用缓存（`Network.setCacheDisabled`）再重载，否则跑的是旧代码。测试文件：`test/compare.model.test.html`（逐对 diff、报告与预览构建）、`test/compare.render.test.html`（对比页渲染，HEAD 起即失败、与业务改动无关）、`test/compare.preview.test.html`（单页预览、连续框选建规则与编号重绘、操作栏沿祖先链切父／子容器、预览文档滚动时框与操作栏跟随内容、提取测试面板：整页 / 框选容器两种数据源、JSON 与表格输出、语法错误报错）、`test/detection.model.test.html`（选择器构建、容器识别、列表/详情判定、编号、规则求值与归一化、列表对比的类型注册与基线归一）、`test/detection.script.test.html`（JS 函数规则生成代码的通过/不通过、self/others 形态、失败分支与语法错误）、`test/detection.list.test.html`（列表对比取键与按键 diff：基线未记录/一致/增删改/仅调序、失败分支、截断与不嵌 HTML）、`test/popup.savepage.test.html`（弹窗暂存列表、分组的固定存在与删除）、`test/popup.detect.test.html`（弹窗变更检测列表、按来源限定、检测与删除、未开启用户脚本时 JS 函数 / 列表对比规则置灰）、`test/popup.detect.script.test.html`（弹窗执行用户脚本规则：注入代码含同组编号与基线 JSON、结果按 passed / 基线 / 三行 diff 呈现、基线写回 storage）。
+本目录无构建命令。测试用的 HTML 依赖 ES module 动态导入，`file://` 下会被 CORS 拦掉，需在仓库根起一个静态服务（如 `python3 -m http.server 8791`）后访问 `http://127.0.0.1:8791/test/<文件>`；断言通过时给 `body` 加 `data-test-passed`，抛错时加 `data-test-error`。改动 ES module 后在浏览器里重跑测试要先禁用缓存（`Network.setCacheDisabled`）再重载，否则跑的是旧代码。测试文件：`test/compare.model.test.html`（逐对 diff、报告与预览构建）、`test/compare.render.test.html`（对比页渲染，HEAD 起即失败、与业务改动无关）、`test/compare.preview.test.html`（单页预览、连续框选建规则与编号重绘、操作栏沿祖先链切父／子容器、预览文档滚动时框与操作栏跟随内容、提取测试面板：整页 / 框选容器两种数据源、JSON 与表格输出、语法错误报错）、`test/detection.model.test.html`（选择器构建、容器识别、列表/详情判定、编号、规则求值与归一化、列表对比的类型注册与基线归一）、`test/detection.script.test.html`（JS 函数规则生成代码的通过/不通过、self/others 形态、失败分支与语法错误）、`test/detection.list.test.html`（列表对比取键与按键 diff：基线未记录/一致/增删改/仅调序、失败分支、截断与不嵌 HTML）、`test/popup.savepage.test.html`（弹窗暂存列表、分组的固定存在与删除）、`test/popup.detect.test.html`（弹窗变更检测列表、按来源限定、检测与删除、未开启用户脚本时 JS 函数 / 列表对比规则置灰）、`test/popup.detect.script.test.html`（弹窗执行用户脚本规则：注入代码含同组编号与基线 JSON、结果按 passed / 基线 / 三行 diff 呈现、基线写回 storage）、`test/clip.model.test.html`（剪藏冻结：清理清单、样式差分内联、最外层不冻结宽高、`size_clip_fragment` 的尺寸写入与压过原有宽高、伪元素实体化、语境标签补祖先、id 前缀与引用重写、资源内联与占位、**宿主 `!important` 全面进攻下计算样式与几何逐位一致**、自检正则）、`test/clip.result.test.html`（剪藏结果页：标题/地址/统计、只读源码、空 sandbox 预览 iframe、自检通过与标红、宽高输入默认记录原尺寸且改一维只动一维、留空回流体、「原尺寸」复原、缺 id 与找不到记录两种空状态）、`test/popup.clip.test.html`（弹窗剪藏页：菜单与标题、记录列表排序与统计文案、坏数据丢弃、打开结果页、删除与清空写回 storage、框选剪藏注入 `clip_region` 并写回选项后关弹窗）、`test/store.clip.test.html`（剪藏方法的复制 / 打开 / 删除 / 清空 / 选项开关，以及非 HTTP(S) 页面拒绝启动选择器）。
 
 扩展改动后手动验证：加载扩展 → 在扩展详情页打开「允许用户脚本」→ 打开任一 HTTP(S) 页面 → 暂存至少两条记录 → 开始对比；再进「变更检测」：从暂存列表打开预览页 → 点「框选」拖一个框 → 用操作栏点「父容器」核对轮廓与预填值跟着换、点「子容器」退回 → 滚动预览核对框与轮廓跟着内容走（且内容不抖动）→ 确认容器与预填值 → 保存一条颜色规则；再框第二个块 → 类型切到「JS 函数」→ 写 `return self.text.includes("…")`（或 `return others[1] && others[1].text !== self.text`）→ 保存；再框一个列表容器 → 类型切到「列表对比」→ 按该站点改写取键函数 → 保存 → 三个框都带编号；回到弹窗核对四种类型的条件描述与形态徽标，在同一站点与另一站点标签页点「检测」，核对满足/不满足/未找到/执行失败四种呈现与置灰原因；列表对比规则应先显示「待记录基线」，首次检测后变成「已记录基线 N 项」，改动页面（增 / 删 / 改一项、只调换顺序）后再次检测核对三行 diff 与计数（只调序应为「无变更」）；关掉「允许用户脚本」重载扩展后，JS 函数 / 列表对比规则置灰且页级提示出现，颜色 / 内容规则不受影响。
 
 另外在预览页点标题栏「提取测试」展开抽屉：核对入参预览默认就是整页 HTML 源码 → 数据源切「框选容器」核对入参预览换成该容器的 `outerHTML`（且整页里别的内容不再出现）→ 写 `return Array.from(document.querySelectorAll("li")).map((li) => ({ 文本: li.textContent.trim() }))` → 运行，核对 JSON、表格与状态行的入参 / 行为 / 输出三段；再框另一个容器（或点「父容器」）核对入参预览跟着换；把数据源切回「整页 HTML」再运行（没有待保存选区时切到「框选容器」应提示先框选）；再把函数体改成 `return (` 核对「执行出错：…」。沙箱执行器 iframe 不占位，面板展开时预览是被压缩而不是被盖住。
+
+剪藏的手动验证：加载扩展 → 打开任一 HTTP(S) 页面 → 弹窗「剪藏」页点「框选剪藏」→ 弹窗关闭、页面出现十字光标与提示条 → 拖动框选一块内容（核对高亮框跟着鼠标走，且**页面内容不抖动**——轮廓图层不能把滚动区域撑大）→ 点「↑ 父级」/「↓ 子级」核对轮廓与标签切换、点「剪藏」或按回车 → 页面上出现进度、结果页自动打开 → 核对标题 / 地址 / 统计与预览、源码只读且与预览一致、自检显示通过 → 改「宽」核对预览里的片段立刻跟着变、源码同步改（改「高」同理，「原尺寸」能一键复原，留空一维则该维随宿主自适应）→ 把片段粘进一个自带 `*{…!important}` 规则的页面（或在任意网页控制台里 `document.body.innerHTML = 片段`）核对显示与实时页面一致、没有图片缺失、Network 面板里没有任何新请求 → 回到弹窗核对记录已入列表（标题 / 统计 / 来源）、点标题能重开结果页、「复制」按钮短暂显示「已复制」、「删除」与「清空」都有确认 → 换一个非 HTTP(S) 页面（如 `chrome://extensions`）核对「框选剪藏」置灰 → 打开一张跨域取不到的图片所在的页面剪藏，核对占位块与原图同尺寸、`title` 里有说明。
 
 Chrome API 依据：[模块 Service Worker](https://developer.chrome.com/docs/extensions/develop/concepts/service-workers/basics)、[Cookie 权限](https://developer.chrome.com/docs/extensions/reference/api/cookies)、[定时任务](https://developer.chrome.com/docs/extensions/reference/api/alarms)、[脚本注入](https://developer.chrome.com/docs/extensions/reference/api/scripting)、[沙箱页](https://developer.chrome.com/docs/extensions/reference/manifest/sandbox)。

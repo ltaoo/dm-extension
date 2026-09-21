@@ -1,0 +1,145 @@
+<!doctype html><html data-n="test-document"><head data-n="test-head"><meta charset="utf-8"></head><body data-n="test-body"><script type="module" data-n="test-script">
+// store.js 在模块级执行 CookieViewModel() 创建单例，普通页面没有 chrome 对象；
+// 先注入最小 chrome 桩再动态导入，随后各用例仍以显式假 client 驱动。
+globalThis.chrome = { runtime: { getManifest: () => ({ version: "0.0.0" }) } };
+const { CookieViewModel } = await import("../src/models/store.js");
+
+// 弹窗里 window.close 用来「把舞台让给页面」；测试里换成记账。
+let closed = 0;
+window.close = () => { closed += 1; };
+
+const records = [
+  { id: "c1", url: "https://example.com/a", title: "商品卡片", hostname: "example.com", html: '<div style="all:initial!important">卡</div>', element_count: 12, byte_size: 4096, created_at: 200 },
+  { id: "c2", url: "https://other.test/b", title: "价格表", hostname: "other.test", html: "<table></table>", element_count: 5, byte_size: 512, created_at: 100 },
+];
+
+// 剪藏选项与记录都从 storage 读；启动选择器要注入 clip_region 并写回选项。
+function create_client({ tab_url = "https://example.com/page", stored = records } = {}) {
+  const calls = [];
+  const writes = {};
+  const removed = [];
+  const created = [];
+  const client = {
+    calls, writes, removed, created,
+    runtime: {
+      getManifest: () => ({ version: "0.0.0" }),
+      getURL: (path) => `chrome-extension://test/${path}`,
+      sendMessage: async () => ({ success: true, profiles: [{
+        id: "default", name: "默认", enabled: false, endpoint: "http://127.0.0.1:2022/api/cookies/update", intervalMinutes: 60,
+        encryption: { method: "none", uuid: "", password: "" }, domainFilter: { domains: [] },
+      }], statuses: {} }),
+    },
+    storage: {
+      local: {
+        get: async (keys) => {
+          const data = { "region-clips": stored, "clip-options": { important: true, inline_images: false, materialize_pseudo: true } };
+          const wanted = Array.isArray(keys) ? keys : [keys];
+          return Object.fromEntries(wanted.filter(Boolean).map((key) => [key, data[key]]));
+        },
+        set: async (items) => { Object.assign(writes, items); },
+        remove: async (key) => { removed.push(key); },
+      },
+      onChanged: { addListener() {}, removeListener() {} },
+    },
+    tabs: {
+      query: async () => [{ id: 1, url: tab_url }],
+      create: async (options) => { created.push(options); return {}; },
+    },
+    cookies: { getAllCookieStores: async () => [{ id: "0", tabIds: [1] }], getAll: async () => [] },
+    scripting: {
+      executeScript: async ({ func, args }) => {
+        calls.push({ func, args });
+        if (func?.name === "clip_region") return [{ result: { ok: true } }];
+        return [{ result: { title: "示例页面", url: "https://example.com/", parser: "generic", html: "<html><body><p>内容</p></body></html>", images: [], videos: [], files: [] } }];
+      },
+    },
+  };
+  return client;
+}
+
+// —— 复制片段：写剪贴板，进入该行的已复制状态 ——
+{
+  const client = create_client();
+  const written = [];
+  const store = CookieViewModel(client, { writeText: async (text) => written.push(text) });
+  await store.methods.ready();
+  if (store.state.clip_count.value !== 2) throw new Error(`前置条件：应加载 2 条剪藏记录，实际 ${store.state.clip_count.value}`);
+  await store.methods.copy_clip("c1");
+  if (written[0] !== '<div style="all:initial!important">卡</div>') throw new Error(`剪贴板应写入片段：${written[0]}`);
+  if (store.state.clip_copied.value !== "c1") throw new Error("复制成功后应标记该条已复制");
+  if (store.state.clip_feedback.value !== "已复制：商品卡片") throw new Error(`应反馈复制结果：${store.state.clip_feedback.value}`);
+}
+
+// —— 复制失败：不进已复制状态，反馈原因 ——
+{
+  const store = CookieViewModel(create_client(), { writeText: async () => { throw new Error("clipboard denied"); } });
+  await store.methods.ready();
+  await store.methods.copy_clip("c1");
+  if (store.state.clip_copied.value !== "") throw new Error("复制失败不应标记已复制");
+  if (store.state.clip_feedback.value !== "复制失败：clipboard denied") throw new Error(`应反馈复制失败原因：${store.state.clip_feedback.value}`);
+  await store.methods.copy_clip("missing");
+  if (store.state.clip_feedback.value !== "未找到对应的剪藏记录") throw new Error("复制不存在的记录应提示");
+}
+
+// —— 打开 / 删除 / 清空 ——
+{
+  const client = create_client();
+  const store = CookieViewModel(client, { writeText: async () => {} }, () => true);
+  await store.methods.ready();
+  await store.methods.open_clip("c2");
+  if (client.created.at(-1)?.url !== "chrome-extension://test/src/clip/clip.html?id=c2") throw new Error(`应打开该条结果页：${client.created.at(-1)?.url}`);
+
+  await store.methods.remove_clip("c1");
+  if (JSON.stringify(client.writes["region-clips"]?.map((record) => record.id)) !== '["c2"]') throw new Error(`删除后应写回剩余记录：${JSON.stringify(client.writes["region-clips"])}`);
+  if (store.state.clip_count.value !== 1) throw new Error("删除后计数应更新");
+
+  await store.methods.clear_clips();
+  if (!client.removed.includes("region-clips")) throw new Error("清空应移除 region-clips 键");
+  if (store.state.clip_count.value !== 0) throw new Error("清空后计数应为 0");
+  if (store.state.clip_feedback.value !== "已清空剪藏记录") throw new Error(`应反馈清空结果：${store.state.clip_feedback.value}`);
+}
+
+// —— 框选剪藏：非 HTTP(S) 页面拒绝，且不注入 ——
+{
+  const client = create_client({ tab_url: "about:blank" });
+  const store = CookieViewModel(client, { writeText: async () => {} });
+  await store.methods.ready();
+  const before = closed;
+  await store.methods.start_clip();
+  if (client.calls.some((call) => call.func?.name === "clip_region")) throw new Error("非 HTTP(S) 页面不应注入选择器");
+  if (closed !== before) throw new Error("启动失败不应关闭弹窗");
+  if (store.state.clip_feedback.value !== "当前页面不支持区域剪藏") throw new Error(`应给出拒绝原因：${store.state.clip_feedback.value}`);
+  if (store.state.clip_available.value !== false) throw new Error("非 HTTP(S) 页面应标记为不可剪");
+}
+
+// —— 框选剪藏：注入选择器 + 存储里的选项，写回归一化选项后关弹窗 ——
+{
+  const client = create_client();
+  const store = CookieViewModel(client, { writeText: async () => {} });
+  await store.methods.ready();
+  if (store.state.clip_available.value !== true) throw new Error("HTTP(S) 页面应标记为可剪");
+  const before = closed;
+  await store.methods.start_clip();
+  const injections = client.calls.filter((call) => call.func?.name === "clip_region");
+  if (injections.length !== 1) throw new Error(`应注入一次选择器，实际 ${injections.length}`);
+  if (JSON.stringify(injections[0].args[0]) !== JSON.stringify({ important: true, inline_images: false, materialize_pseudo: true })) throw new Error(`注入的选项应来自存储：${JSON.stringify(injections[0].args[0])}`);
+  if (injections[0].args[0].inline_images !== false) throw new Error("注入的选项应保留存储里的取值");
+  if (JSON.stringify(client.writes["clip-options"]) !== JSON.stringify({ important: true, inline_images: false, materialize_pseudo: true })) throw new Error("启动时应把归一化后的选项写回存储");
+  if (closed !== before + 1) throw new Error("启动成功后应关闭弹窗");
+  if (store.state.clip_loading.value !== false) throw new Error("启动后应复位加载状态");
+  if (store.state.clip_feedback.value !== "") throw new Error(`启动成功不应有错误反馈：${store.state.clip_feedback.value}`);
+}
+
+// —— 选项开关：写回存储并更新状态 ——
+{
+  const client = create_client();
+  const store = CookieViewModel(client, { writeText: async () => {} });
+  await store.methods.ready();
+  await store.methods.set_clip_option("inline_images", true);
+  if (store.state.clip_options.value.inline_images !== true) throw new Error("选项应立即生效");
+  if (client.writes["clip-options"]?.inline_images !== true) throw new Error("选项应写回存储");
+  if (store.state.clip_options.value.important !== true || store.state.clip_options.value.materialize_pseudo !== true) throw new Error("只应改动指定选项");
+}
+
+document.body.textContent = "store clip checks passed";
+</script></body></html>
