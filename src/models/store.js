@@ -3,12 +3,13 @@ import { createInputStore, createCheckboxStore } from "../../assets/vendor/src/d
 import { default_settings, status_key, validate_settings } from "./sync.model.js";
 import { comparison_groups_key, default_comparison_group, group_comparison_records, normalize_group_names } from "../compare/compare.model.js";
 import { USER_SCRIPT_TYPES, build_list_code, build_script_code, describe_rule, describe_shape, detection_rules_key, evaluate_detection_rule, hostname_of, normalize_detection_rules, number_rules, read_baseline } from "../compare/detection.model.js";
+import { build_clip_document, clip_options_key, clip_region, clips_key, default_clip_options, normalize_clip_options, normalize_clip_records } from "../clip/clip.model.js";
 
 const { ref, computed, combine, vm } = globalThis.Timeless;
 
 // 页面解析器：内置飞书域名 + 用户配置的域名规则共同决定。
 const PARSER_LABELS = { generic: "通用", feishu: "飞书文档" };
-const PAGE_TITLES = { cookie: "Cookie", savepage: "对比", detect: "变更检测", settings: "设置" };
+const PAGE_TITLES = { cookie: "Cookie", savepage: "对比", clip: "剪藏", detect: "变更检测", settings: "设置" };
 const parsers_key = "page-parsers";
 const comparison_records_key = "comparison-records";
 const comparison_group_key = "comparison-group";
@@ -257,6 +258,11 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
   const detection_results_ = ref({});
   const detection_feedback_ = ref("");
   const detection_loading_ = ref("");
+  const clip_records_ = ref([]);
+  const clip_options_ = ref(default_clip_options());
+  const clip_loading_ = ref(false);
+  const clip_feedback_ = ref("");
+  const clip_copied_ = ref("");
   // JS 函数规则要用 chrome.userScripts 执行；Chrome 138 起用户还需在扩展详情页手动开启「允许用户脚本」。
   // 页面加载时定一次：未开启时 chrome.userScripts 为 undefined，该类型的规则置灰。
   const script_supported_ = ref(typeof client?.userScripts?.execute === "function");
@@ -278,6 +284,7 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
   let page_transition_timer;
   let copy_feedback_timer;
   let savepage_copy_timer;
+  let clip_copy_timer;
   let navigated = false;
   let hydrating_domains = false;
   const profile_buttons = new Map();
@@ -285,6 +292,7 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
   const group_buttons = new Map();
   const record_buttons = new Map();
   const rule_buttons = new Map();
+  const clip_buttons = new Map();
   const selected_cookies_ = combine({ cookies: cookies_, selected: selected_ }, ({ cookies, selected }) => cookies.filter((_, index) => selected.has(index)));
 
   async function refresh() {
@@ -370,6 +378,17 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
     } catch (error) {
       detection_rules_.as([]);
       detection_feedback_.as(`读取变更检测规则失败：${error.message}`);
+    }
+  }
+
+  async function load_clips() {
+    try {
+      const saved = await client.storage.local.get([clips_key, clip_options_key]);
+      clip_records_.as(normalize_clip_records(saved?.[clips_key]));
+      clip_options_.as(normalize_clip_options(saved?.[clip_options_key]));
+    } catch (error) {
+      clip_records_.as([]);
+      clip_feedback_.as(`读取剪藏记录失败：${error.message}`);
     }
   }
 
@@ -536,7 +555,7 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
       }
     },
     navigate(page) {
-      if (!["cookie", "settings", "savepage", "detect"].includes(page) || page === page_.value) return;
+      if (!["cookie", "settings", "savepage", "clip", "detect"].includes(page) || page === page_.value) return;
       navigated = true;
       clearTimeout(page_transition_timer);
       leaving_page_.as(page_.value);
@@ -548,10 +567,11 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
       client.storage.onChanged.addListener(on_storage_changed);
       await Promise.all([
         client.storage.local.get("popup-page").then((saved) => {
-          if (!navigated && ["cookie", "settings", "savepage", "detect"].includes(saved["popup-page"])) page_.as(saved["popup-page"]);
+          if (!navigated && ["cookie", "settings", "savepage", "clip", "detect"].includes(saved["popup-page"])) page_.as(saved["popup-page"]);
         }).catch((error) => message_.as(error.message)),
         load_parsers(),
         load_comparisons(),
+        load_clips(),
         load_detection_rules(),
         refresh(),
         send("get").catch((error) => message_.as(error.message)),
@@ -563,6 +583,7 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
       clearTimeout(page_transition_timer);
       clearTimeout(copy_feedback_timer);
       clearTimeout(savepage_copy_timer);
+      clearTimeout(clip_copy_timer);
       client.storage.onChanged.removeListener(on_storage_changed);
     },
     refresh,
@@ -782,6 +803,87 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
         savepage_feedback_.as(`打开对比页失败：${error.message}`);
       }
     },
+    // 区域剪藏：把选择器注入当前页面（页内自建 Shadow DOM，页面样式影响不到它），
+    // 随后关掉弹窗 —— 用户要在页面上拖动框选，弹窗挡在那里没法操作。
+    // 真正的提取、自检、落库、开结果页都在 SW 里（见 background.js 的 clip-region 分支）。
+    async start_clip() {
+      if (clip_loading_.value) return;
+      clip_loading_.as(true);
+      clip_feedback_.as("");
+      try {
+        const [tab] = await client.tabs.query({ active: true, currentWindow: true });
+        if (!tab?.id) throw new Error("未获取到当前标签页");
+        if (!/^https?:\/\//i.test(tab.url || "")) throw new Error("当前页面不支持区域剪藏");
+        const options = normalize_clip_options(clip_options_.value);
+        await client.scripting.executeScript({ target: { tabId: tab.id }, func: clip_region, args: [options] });
+        await client.storage.local.set({ [clip_options_key]: options });
+        window.close();
+      } catch (error) {
+        clip_feedback_.as(error.message);
+      } finally {
+        clip_loading_.as(false);
+      }
+    },
+    async set_clip_option(name, value) {
+      const options = normalize_clip_options({ ...clip_options_.value, [name]: Boolean(value) });
+      clip_options_.as(options);
+      try {
+        await client.storage.local.set({ [clip_options_key]: options });
+      } catch (error) {
+        clip_feedback_.as(`保存剪藏选项失败：${error.message}`);
+      }
+    },
+    async copy_clip(id) {
+      const record = clip_records_.value.find((item) => item.id === id);
+      if (!record) return clip_feedback_.as("未找到对应的剪藏记录");
+      clearTimeout(clip_copy_timer);
+      try {
+        await clipboard.writeText(build_clip_document(record));
+        clip_copied_.as(id);
+        clip_feedback_.as(`已复制：${record.title}`);
+        clip_copy_timer = setTimeout(() => clip_copied_.as(""), 3000);
+      } catch (error) {
+        clip_copied_.as("");
+        clip_feedback_.as(`复制失败：${error.message}`);
+      }
+    },
+    async open_clip(id) {
+      const record = clip_records_.value.find((item) => item.id === id);
+      if (!record) return clip_feedback_.as("未找到对应的剪藏记录");
+      try {
+        await client.tabs.create({ url: `${client.runtime.getURL("src/clip/clip.html")}?id=${encodeURIComponent(id)}` });
+      } catch (error) {
+        clip_feedback_.as(`打开剪藏结果失败：${error.message}`);
+      }
+    },
+    async remove_clip(id) {
+      const record = clip_records_.value.find((item) => item.id === id);
+      if (!record) return;
+      if (!confirm_remove(`删除剪藏记录「${record.title}」？`)) return;
+      const records = clip_records_.value.filter((item) => item.id !== id);
+      try {
+        if (records.length) await client.storage.local.set({ [clips_key]: records });
+        else await client.storage.local.remove(clips_key);
+        clip_records_.as(records);
+        clip_buttons.delete(id);
+        clip_feedback_.as(`已删除：${record.title}`);
+      } catch (error) {
+        clip_feedback_.as(`删除失败：${error.message}`);
+      }
+    },
+    async clear_clips() {
+      const count = clip_records_.value.length;
+      if (!count) return;
+      if (!confirm_remove(`清空全部 ${count} 条剪藏记录？`)) return;
+      try {
+        await client.storage.local.remove(clips_key);
+        clip_records_.as([]);
+        clip_buttons.clear();
+        clip_feedback_.as("已清空剪藏记录");
+      } catch (error) {
+        clip_feedback_.as(`清空失败：${error.message}`);
+      }
+    },
     async save(sync = false) {
       if (busy_.value) return;
       busy_.as(true);
@@ -854,6 +956,14 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
         return { ...rule, condition: describe_rule(rule), shape_label: describe_shape(rule), detectable, reason };
       })),
       detection_count: computed(detection_rules_, (rules) => rules.length),
+      clip_records: clip_records_,
+      clip_options: clip_options_,
+      clip_loading: clip_loading_,
+      clip_feedback: clip_feedback_,
+      clip_copied: clip_copied_,
+      clip_count: computed(clip_records_, (records) => records.length),
+      // 只有 HTTP(S) 页面能剪：注入需要 activeTab，弹窗已在别的页面上时按钮置灰。
+      clip_available: computed(url_, (url) => /^https?:\/\//i.test(url || "")),
   };
   const ui = {
     domain_copy_button(domain) {
@@ -882,6 +992,14 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
         remove: new vm.ButtonCore({ variant: "ghost", size: "sm", onClick: () => methods.remove_record(id) }),
       });
       return record_buttons.get(id);
+    },
+    clip_button(id) {
+      if (!clip_buttons.has(id)) clip_buttons.set(id, {
+        open: new vm.ButtonCore({ variant: "ghost", size: "sm", onClick: () => methods.open_clip(id) }),
+        copy: new vm.ButtonCore({ variant: "ghost", size: "sm", onClick: () => methods.copy_clip(id) }),
+        remove: new vm.ButtonCore({ variant: "ghost", size: "sm", onClick: () => methods.remove_clip(id) }),
+      });
+      return clip_buttons.get(id);
     },
     rule_button(id) {
       if (!rule_buttons.has(id)) {
@@ -938,6 +1056,7 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
     menu: [
       { name: "cookie", title: "Cookie", icon: "file-lock" },
       { name: "savepage", title: "对比", icon: "file-code" },
+      { name: "clip", title: "剪藏", icon: "scroll-text" },
       { name: "detect", title: "变更检测", icon: "radio-tower" },
       { name: "settings", title: "设置", icon: "settings" },
     ].map((item) => ({ ...item, button$: new vm.ButtonCore({ variant: "ghost", onClick: () => methods.navigate(item.name) }) })),
@@ -947,6 +1066,11 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
     copy_page$: new vm.ButtonCore({ variant: "outline", size: "sm", onClick: methods.copy_page }),
     clear_comparisons$: new vm.ButtonCore({ variant: "ghost", size: "sm", onClick: methods.clear_comparisons }),
     start_comparison$: new vm.ButtonCore({ variant: "primary", size: "sm", onClick: methods.start_comparison }),
+    start_clip$: new vm.ButtonCore({ variant: "primary", size: "sm", onClick: methods.start_clip }),
+    clear_clips$: new vm.ButtonCore({ variant: "ghost", size: "sm", onClick: methods.clear_clips }),
+    clip_important$: createCheckboxStore({ checked: computed(clip_options_, (options) => options.important), onChange: (value) => methods.set_clip_option("important", value) }),
+    clip_inline_images$: createCheckboxStore({ checked: computed(clip_options_, (options) => options.inline_images), onChange: (value) => methods.set_clip_option("inline_images", value) }),
+    clip_pseudo$: createCheckboxStore({ checked: computed(clip_options_, (options) => options.materialize_pseudo), onChange: (value) => methods.set_clip_option("materialize_pseudo", value) }),
     copy_domain$: new vm.ButtonCore({ variant: "outline", size: "sm", onClick: () => methods.copy_domain() }),
     copy_all$: new vm.ButtonCore({ variant: "outline", size: "sm", onClick: () => methods.copy(true) }),
     copy_selected$: new vm.ButtonCore({ variant: "primary", size: "sm", onClick: () => methods.copy() }),
@@ -1002,6 +1126,8 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
     [computed(page_html_, (content) => !content), ui.copy_page$],
     [computed(comparison_current_, (records) => !records.length), ui.clear_comparisons$],
     [computed(state.comparison_ready, (ready) => !ready), ui.start_comparison$],
+    [combine({ loading: clip_loading_, available: state.clip_available }, (s) => s.loading || !s.available), ui.start_clip$],
+    [computed(clip_records_, (records) => !records.length), ui.clear_clips$],
     [combine({ loading: loading_, domain: page_domain_ }, (s) => s.loading || !s.domain), ui.copy_domain$],
     [computed(cookies_, (cookies) => !cookies.length), ui.copy_all$],
     [computed(state.selected_count, (count) => !count), ui.copy_selected$],

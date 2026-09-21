@@ -5,7 +5,7 @@
   "version_name": "v260830",
   "minimum_chrome_version": "138",
   "description": "Download & Manage 浏览器扩展，集中管理站点数据与应用设置。",
-  "permissions": ["activeTab", "cookies", "scripting", "userScripts", "storage", "alarms", "clipboardWrite"],
+  "permissions": ["activeTab", "cookies", "scripting", "userScripts", "storage", "unlimitedStorage", "alarms", "clipboardWrite"],
   "host_permissions": ["http://*/*", "https://*/*"],
   "icons": {
     "16": "assets/icons/icon-16.png",

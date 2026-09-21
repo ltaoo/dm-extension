@@ -4,6 +4,7 @@ import "../../assets/vendor/timeless.web.umd.min.js";
 import { Button } from "../../assets/vendor/src/dmui.js";
 import CookiePageView from "../pages/cookie.js";
 import SavePageView from "../pages/savepage.js";
+import ClipPageView from "../pages/clip.js";
 import DetectPageView from "../pages/detect.js";
 import SettingsPageView from "../pages/settings.js";
 
@@ -43,6 +44,7 @@ function PopupView() {
       View({ class: "popup-pages", attributes: { n: "popup-pages" } }, [
         CookiePageView({ store: cookie$ }),
         SavePageView({ store: cookie$ }),
+        ClipPageView({ store: cookie$ }),
         DetectPageView({ store: cookie$ }),
         SettingsPageView({ store: cookie$ }),
       ]),
