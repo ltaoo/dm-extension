@@ -9,6 +9,22 @@ Chrome（138+）Manifest V3 扩展，提供以下能力：
 
 无构建步骤、无 CDN、无依赖安装，本目录即为可加载的完整扩展。
 
+## 界面截图
+
+以下为 `1.0.0` 版本界面，使用虚构的 `example.com` 演示数据。
+
+**Cookie**：查看站点 Cookie，选择后复制，或将域名添加到同步配置。
+
+![Cookie 页面：站点 Cookie 列表与复制操作](assets/screenshots/cookies.png)
+
+**Cookie 同步**：管理多个同步接口、域名范围与定时任务。
+
+![Cookie 同步页面：接口配置、定时同步与域名列表](assets/screenshots/cookie-sync.png)
+
+**保存页面**：设置文件名，保存 HTML 页面快照或当前可见区域的 PNG 截图。
+
+![保存页面：来源信息、文件名与保存操作](assets/screenshots/save-page.png)
+
 ## 安装
 
 1. 打开 `chrome://extensions`，开启「开发者模式」。
