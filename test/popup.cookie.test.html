@@ -29,7 +29,7 @@ globalThis.chrome = {
       sent_actions.push(action);
       if (["save", "sync"].includes(action)) sync_profiles = [...sync_profiles.filter((profile) => profile.id !== settings.id), settings];
       if (action === "add-domain") sync_profiles = sync_profiles.map((profile) => profile.id === settings.id ? add_profile_domain(profile, settings.domain) : profile);
-      return { success: true, profiles: structuredClone(sync_profiles), statuses: { default: { message: "尚未同步 Cookie", lastSuccessAt: last_success } } };
+      return { success: true, profiles: structuredClone(sync_profiles), statuses: { default: { message: action === "sync" ? "已同步 1 项 Cookie" : "尚未同步 Cookie", lastSuccessAt: last_success } } };
     },
   },
   storage: {
@@ -159,9 +159,12 @@ for (const page of ["cookie-sync", "save-page", "settings"]) {
     node("save-button").click();
     await tick();
     assert(sent_actions.at(-1) === "save", "独立同步页应能保存配置");
+    assert(!node("settings-message").hidden && node("settings-message").textContent.includes("已保存"), "仅保存配置时应保留操作反馈");
     node("sync-button").click();
     await tick();
     assert(sent_actions.at(-1) === "sync", "独立同步页应能保存并同步配置");
+    assert(node("sync-status").textContent.startsWith("已同步 1 项 Cookie"), "同步成功后状态栏应显示同步数量");
+    assert(node("settings-message").hidden && (node("settings-feedback").textContent.match(/已同步 1 项 Cookie/g) || []).length === 1, "同步成功提示应只显示一次并清除旧保存反馈");
     assert(node("sync-status").scrollWidth <= node("sync-status").clientWidth, "最近成功时间应完整显示");
     const profile_count = cookie$.state.profiles.value.length;
     add_profile.click();

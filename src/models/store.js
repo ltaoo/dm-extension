@@ -1040,7 +1040,7 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
       message_.as(sync ? "正在同步…" : "正在保存…");
       try {
         await send(sync ? "sync" : "save");
-        message_.as(sync ? status_.value.message : `「${settings_.value.name}」已保存`);
+        message_.as(sync ? "" : `「${settings_.value.name}」已保存`);
       } catch (error) {
         message_.as(error.message);
       } finally {
