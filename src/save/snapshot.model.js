@@ -28,7 +28,35 @@ export async function fetch_snapshot_resource(value, fetcher = fetch) {
 }
 
 // scripting.executeScript 会序列化此函数；所有捕获逻辑必须自包含，且不修改原页面。
-export async function capture_snapshot() {
+export async function capture_snapshot(screenshot = false) {
+  const document_root = document.scrollingElement || document.documentElement;
+  let capture_root = document_root;
+  if (screenshot) {
+    const score = (node, area) => area * (0.5 + Math.min(1, (node.scrollHeight - node.clientHeight) / node.clientHeight));
+    let best_score = document_root.scrollHeight > document_root.clientHeight + 2 ? score(document_root, document.documentElement.clientWidth * document.documentElement.clientHeight) : 0;
+    for (const node of document.querySelectorAll("*")) {
+      if (node === document_root || node.scrollHeight <= node.clientHeight + 2 || !/^(auto|scroll|overlay)$/.test(getComputedStyle(node).overflowY)) continue;
+      if (node.closest("nav,aside,[role=navigation],[role=complementary]")) continue;
+      const rect = node.getBoundingClientRect();
+      let left = Math.max(0, rect.left), top = Math.max(0, rect.top);
+      let right = Math.min(innerWidth, rect.right), bottom = Math.min(innerHeight, rect.bottom);
+      for (let parent = node.parentElement; parent && parent !== document_root; parent = parent.parentElement) {
+        const css = getComputedStyle(parent), box = parent.getBoundingClientRect();
+        if (css.overflowX !== "visible") { left = Math.max(left, box.left + parent.clientLeft); right = Math.min(right, box.left + parent.clientLeft + parent.clientWidth); }
+        if (css.overflowY !== "visible") { top = Math.max(top, box.top + parent.clientTop); bottom = Math.min(bottom, box.top + parent.clientTop + parent.clientHeight); }
+      }
+      if (right - left < Math.max(240, innerWidth * 0.3) || bottom - top < Math.max(160, innerHeight * 0.3)) continue;
+      if (![0.3, 0.5, 0.7].some(part => node.contains(document.elementFromPoint(left + (right - left) * part, (top + bottom) / 2)))) continue;
+      const candidate_score = score(node, (right - left) * (bottom - top)) * (node.closest("main,[role=main]") ? 1.25 : 1) * (left <= innerWidth / 2 && right >= innerWidth / 2 ? 1.2 : 1);
+      if (candidate_score > best_score) { best_score = candidate_score; capture_root = node; }
+    }
+  }
+  const whole_document = capture_root === document_root;
+  const root_style = getComputedStyle(capture_root);
+  const width = Math.ceil(capture_root.scrollWidth + (whole_document ? 0 : (parseFloat(root_style.borderLeftWidth) || 0) + (parseFloat(root_style.borderRightWidth) || 0)));
+  const height = Math.ceil(capture_root.scrollHeight + (whole_document ? 0 : (parseFloat(root_style.borderTopWidth) || 0) + (parseFloat(root_style.borderBottomWidth) || 0)));
+  const pixel_ratio = devicePixelRatio || 1;
+  if (screenshot && (Math.round(width * pixel_ratio) > 32767 || Math.round(height * pixel_ratio) > 32767 || Math.round(width * pixel_ratio) * Math.round(height * pixel_ratio) > 64 * 1024 * 1024)) throw new Error("长截图超过图片尺寸限制，请缩小网页后重试");
   const started = Date.now();
   const warnings = new Set();
   const failed_resources = new Set();
@@ -130,7 +158,7 @@ export async function capture_snapshot() {
     let id = style_ids.get(css);
     if (id === undefined) {
       style_bytes += css.length;
-      if (style_bytes > 24 * 1024 * 1024) throw new Error("页面样式过大，请改用保存截图");
+      if (style_bytes > 24 * 1024 * 1024) throw new Error("页面样式过大，无法完整保存");
       id = styles.length;
       styles.push(css);
       style_ids.set(css, id);
@@ -144,7 +172,7 @@ export async function capture_snapshot() {
     if (!content || content === "none" || content === "normal") return null;
     const strings = [...content.matchAll(/"((?:\\.|[^"\\])*)"|'((?:\\.|[^'\\])*)'/g)];
     if (!strings.length || content.replace(/"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'/g, "").trim()) {
-      warnings.add("部分伪元素内容无法还原，可使用截图保留当前外观。");
+      warnings.add("部分伪元素内容无法还原，保存结果可能缺失。");
       return null;
     }
     const node = scope.doc.createElement("span");
@@ -157,9 +185,10 @@ export async function capture_snapshot() {
   function build_node(live, scope, depth = 0) {
     if (live.nodeType === 3) return scope.doc.createTextNode(live.nodeValue);
     if (live.nodeType !== 1 || omitted.has(live.tagName.toUpperCase()) || (live.tagName === "INPUT" && live.type === "hidden")) return null;
-    if (++elements > 12000 || depth > 300) throw new Error("页面内容过多，请改用保存截图");
+    if (++elements > 12000 || depth > 300) throw new Error("页面内容过多，无法完整保存");
     let tag = live.localName;
     if (tag === "canvas" || tag === "video") tag = "img";
+    if (screenshot && tag === "slot") tag = "span";
     if (["iframe", "frame", "audio"].includes(tag)) tag = "div";
     const node = scope.doc.createElementNS(live.namespaceURI, tag);
     for (const { name, value } of live.attributes) {
@@ -167,6 +196,15 @@ export async function capture_snapshot() {
       try { node.setAttribute(name, value); } catch { /* 页面上无效的属性名不进入快照。 */ }
     }
     freeze_style(live, node, scope);
+    if (screenshot) {
+      node.style.setProperty("content-visibility", "visible", "important");
+      const position = live.ownerDocument.defaultView.getComputedStyle(live).position;
+      if (position === "fixed") node.style.setProperty("position", "absolute", "important");
+      if (position === "sticky") {
+        node.style.setProperty("position", "relative", "important");
+        node.style.setProperty("inset", "auto", "important");
+      }
+    }
     if (live.tagName === "CANVAS" || live.tagName === "VIDEO") {
       try {
         let canvas = live;
@@ -179,7 +217,7 @@ export async function capture_snapshot() {
         const data = canvas.toDataURL("image/png");
         if (data === "data:,") throw new Error("空画布");
         node.setAttribute("src", data);
-      } catch { warnings.add("部分画布或视频画面无法读取，可使用截图保留当前外观。"); }
+      } catch { warnings.add("部分画布或视频画面无法读取，保存结果可能缺失。"); }
       return node;
     }
     if (live.tagName === "IMG") images.push({ node, name: "src", url: absolute(live.currentSrc || live.getAttribute("src") || "", live.baseURI) });
@@ -187,7 +225,7 @@ export async function capture_snapshot() {
       const href = live.getAttribute("href") || live.getAttribute("xlink:href");
       if (href?.startsWith("#")) node.setAttribute("href", href);
       else if (href && live.localName === "image") images.push({ node, name: "href", url: absolute(href, live.baseURI) });
-      else if (href && live.localName === "use") warnings.add("外部 SVG 引用未打包，可使用截图保留当前外观。");
+      else if (href && live.localName === "use") warnings.add("外部 SVG 引用未打包，保存结果可能缺失。");
     } else if (live.tagName === "A") {
       const original_href = live.getAttribute("href") || "";
       const href = absolute(original_href, live.baseURI);
@@ -197,24 +235,42 @@ export async function capture_snapshot() {
     if (live.tagName === "IFRAME" || live.tagName === "FRAME") {
       try {
         if (!live.contentDocument?.documentElement) throw new Error("无法访问内嵌页面");
+        if (screenshot) {
+          const body = build_node(live.contentDocument.body, scope, depth + 1);
+          if (body) node.append(body);
+          node.style.setProperty("overflow", "hidden", "important");
+          collect_fonts(live.contentDocument.styleSheets, live.contentDocument.baseURI);
+          collect_fonts(live.contentDocument.adoptedStyleSheets, live.contentDocument.baseURI);
+          for (const font of live.contentDocument.fonts || []) runtime_fonts.add(font.family.trim().replace(/^["']|["']$/g, "").toLowerCase());
+          return node;
+        }
         const frame_doc = build_document(live.contentDocument, depth + 1);
         const frame = scope.doc.createElement("iframe");
         frame.setAttribute("data-n", "snapshot-frame");
         frame.setAttribute("data-dm-snapshot-style", node.getAttribute("data-dm-snapshot-style"));
         documents.push({ node: frame, doc: frame_doc });
         return frame;
-      } catch { warnings.add("部分内嵌页面无法读取，可使用截图保留当前外观。"); node.textContent = "内嵌页面未保存"; }
+      } catch { warnings.add("部分内嵌页面无法读取，保存结果可能缺失。"); node.textContent = "内嵌页面未保存"; }
     }
     const before = pseudo_node(live, "::before", scope);
     if (before) node.append(before);
-    for (const child of live.childNodes) {
+    if (screenshot && live.shadowRoot) {
+      collect_fonts(live.shadowRoot.styleSheets, live.baseURI);
+      collect_fonts(live.shadowRoot.adoptedStyleSheets, live.baseURI);
+    }
+    let children = screenshot && live.shadowRoot ? live.shadowRoot.childNodes : live.childNodes;
+    if (screenshot && live.localName === "slot") {
+      const assigned = live.assignedNodes({ flatten: true });
+      if (assigned.length) children = assigned;
+    }
+    for (const child of children) {
       const cloned = build_node(child, scope, depth + 1);
       if (cloned) node.append(cloned);
     }
     const after = pseudo_node(live, "::after", scope);
     if (after) node.append(after);
-    // shortcut: 关闭的 Shadow DOM 无法由页面脚本读取，需要保留像素外观时使用截图。
-    if (live.shadowRoot) {
+    // shortcut: 关闭的 Shadow DOM 无法读取，需页面提供导出接口才能完整保存。
+    if (live.shadowRoot && !screenshot) {
       const template = scope.doc.createElement("template");
       template.setAttribute("shadowrootmode", "open");
       template.setAttribute("data-n", "snapshot-shadow-root");
@@ -289,9 +345,10 @@ export async function capture_snapshot() {
     const scope = { doc, root: doc.head, ids: new Set() };
     scopes.push(scope);
     freeze_style(live_doc.documentElement, doc.documentElement, scope);
-    const body = build_node(live_doc.body, scope, depth);
+    const body = build_node(screenshot && !whole_document && live_doc === document ? capture_root : live_doc.body, scope, depth);
     if (!body) throw new Error("未获取到页面内容");
-    doc.body.replaceWith(body);
+    if (body.localName === "body") doc.body.replaceWith(body);
+    else doc.body.append(body);
     collect_fonts(live_doc.styleSheets, live_doc.baseURI);
     collect_fonts(live_doc.adoptedStyleSheets, live_doc.baseURI);
     for (const font of live_doc.fonts || []) runtime_fonts.add(font.family.trim().replace(/^["']|["']$/g, "").toLowerCase());
@@ -317,7 +374,27 @@ export async function capture_snapshot() {
   }
   for (const frame of documents) frame.node.setAttribute("srcdoc", "<!doctype html>\n" + frame.doc.documentElement.outerHTML);
   if (failed_resources.size) warnings.add(`${failed_resources.size} 个资源未能打包，离线打开时相应图片或字体可能缺失。`);
+  if (screenshot) {
+    const root = whole_document ? doc.documentElement : doc.body.firstElementChild;
+    for (const [property, value] of Object.entries({ position: "relative", inset: "auto", width: `${width}px`, height: `${height}px`, "box-sizing": "border-box", "max-width": "none", "max-height": "none", "min-width": "0", "min-height": "0", margin: "0", overflow: "visible", transform: "none", contain: "none" })) root.style.setProperty(property, value, "important");
+    if (!whole_document) {
+      doc.documentElement.removeAttribute("data-dm-snapshot-style");
+      doc.body.style.margin = "0";
+    } else {
+      doc.body.style.setProperty("overflow", "visible", "important");
+    }
+    let background_color = "white";
+    for (let node = capture_root; node; node = node.parentElement) {
+      const color = getComputedStyle(node).backgroundColor;
+      if (color !== "rgba(0, 0, 0, 0)" && color !== "transparent") { background_color = color; break; }
+    }
+    const markup = new XMLSerializer().serializeToString(doc.documentElement);
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}"><foreignObject width="100%" height="100%">${markup}</foreignObject></svg>`;
+    if (new TextEncoder().encode(svg).length > 96 * 1024 * 1024) throw new Error("截图内容过大，无法完整渲染");
+    // shortcut: SVG 只能绘制当前已有 DOM，虚拟列表、关闭的 Shadow DOM 和跨域 iframe 需要专用捕获。
+    return { svg, width, height, pixel_ratio, background_color, title: document.title, warnings: [...warnings] };
+  }
   const html = "<!doctype html>\n" + doc.documentElement.outerHTML;
-  if (new TextEncoder().encode(html).length > 96 * 1024 * 1024) throw new Error("归档文件过大，请改用保存截图");
+  if (new TextEncoder().encode(html).length > 96 * 1024 * 1024) throw new Error("归档文件过大，无法完整保存");
   return { html, title: document.title, warnings: [...warnings], stats: { elements, resources: resources.size, failed: failed_resources.size } };
 }

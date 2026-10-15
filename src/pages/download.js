@@ -28,7 +28,7 @@ export default function DownloadPageView({ store }) {
       View({ class: "download-filename-field", attributes: { n: "download-filename-field" } }, [
         Label({ class: "dm-text-base", attributes: { n: "download-filename-label", id: "download-filename-label", for: "download-filename" } }, ["文件名"]),
         Input({ store: ui.download_name$, class: "dm-text-base", rootAttributes: { n: "download-filename-wrapper" }, attributes: { n: "download-filename-input", id: "download-filename", "aria-labelledby": "download-filename-label", "aria-describedby": "download-filename-help", autocomplete: "off", spellcheck: "false" } }),
-        View({ class: "dm-text-muted", attributes: { n: "download-filename-help", id: "download-filename-help" } }, ["留空时使用页面标题，自动添加 .html 扩展名。"]),
+        View({ class: "dm-text-muted", attributes: { n: "download-filename-help", id: "download-filename-help" } }, ["留空时使用页面标题，自动添加 .html 或 .png 扩展名。"]),
       ]),
       View({ class: "download-properties", attributes: { n: "download-properties" } }, [
         View({ class: "download-property", attributes: { n: "download-format" } }, [
@@ -40,7 +40,7 @@ export default function DownloadPageView({ store }) {
           View({ attributes: { n: "download-destination-value" } }, ["浏览器下载位置"]),
         ]),
       ]),
-      View({ class: "download-scope dm-text-muted", attributes: { n: "download-scope" } }, ["冻结当前样式，打包可读取的图片与字体。若需保留当前可见区域的完整外观，可保存 PNG 截图。"]),
+      View({ class: "download-scope dm-text-muted", attributes: { n: "download-scope" } }, ["HTML 快照会冻结样式并打包图片与字体；长截图会自动识别并展开主内容副本，保存为 PNG，无需滚动页面。识别到独立滚动容器时仅保存该区域。保存期间请保持面板打开。"]),
       View({ class: "download-warnings", attributes: { n: "download-warnings", role: "status", hidden: computed(state.download_warnings, (warnings) => warnings.length ? undefined : true) } }, [
         View({ class: "dm-font-semibold", attributes: { n: "download-warnings-heading" } }, ["部分内容未能完整保存"]),
         For({ each: state.download_warnings, render: (text) => View({ attributes: { n: "download-warning" } }, [text]) }),
@@ -56,7 +56,7 @@ export default function DownloadPageView({ store }) {
         ]),
         View({ class: "download-status-message dm-text-muted", attributes: { n: "download-status-message", title: state.download_message } }, [state.download_message]),
       ]),
-      Button({ store: ui.download_screenshot$, class: "dm-text-base", attributes: { n: "download-screenshot-button", title: "保存当前可见区域为 PNG 图片" } }, [computed(state.screenshot_saving, (saving) => saving ? "正在截图…" : "保存截图")]),
+      Button({ store: ui.download_screenshot$, class: "dm-text-base", attributes: { n: "download-screenshot-button", title: "无需滚动页面，将主内容渲染为 PNG 长截图" } }, [computed(state.screenshot_saving, (saving) => saving ? "正在截图…" : "保存长截图")]),
       Button({ store: ui.download_page$, class: "download-save-button dm-text-base", attributes: { n: "download-page-button" } }, [
         Icon({ name: "download", size: 18, attributes: { n: "download-save-icon", "aria-hidden": "true" } }),
         computed(state.download_status, (status) => ({ reading: "正在保存…", sending: "正在保存…", success: "再次保存", error: "重试保存" }[status] || "保存当前页面")),

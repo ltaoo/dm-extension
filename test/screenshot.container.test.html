@@ -1,0 +1,42 @@
+<!doctype html><html data-n="test-document"><head data-n="test-head"><meta charset="utf-8" data-n="test-charset">
+<style data-n="test-style">
+html,body{margin:0;height:100%;overflow:hidden}
+header{position:fixed;inset:0 0 auto;height:64px;background:#ffdd00;z-index:2}
+aside{position:fixed;left:0;top:64px;bottom:0;width:180px;overflow:auto;background:#eee}
+main{position:fixed;top:80px;bottom:20px;left:200px;right:20px;overflow:auto;border:3px solid #333;padding:12px;scroll-behavior:smooth}
+#article{height:1900px;width:1000px;background:linear-gradient(#c83232,#3232c8)}
+#sticky{position:sticky;top:0;height:30px;background:#32c832}
+#fixed{position:fixed;top:100px;right:40px;width:50px;height:30px;background:#f00}
+#small{overflow:auto;width:250px;height:170px}
+#hidden{position:fixed;inset:70px 10px 10px 190px;overflow:auto;visibility:hidden}
+</style></head><body data-n="test-body">
+<header data-n="fixed-header">固定 Header</header>
+<aside data-n="sidebar"><div style="height:10000px" data-n="sidebar-content">很长的侧栏</div></aside>
+<main data-n="main-scroll"><div id="sticky" data-n="sticky-title">吸顶标题</div><div id="article" data-n="article"><div id="small" data-n="small-scroll"><div style="height:5000px" data-n="small-content">小型滚动框</div></div></div><div id="fixed" data-n="fixed-toolbar"></div></main>
+<div id="hidden" data-n="hidden-scroll"><div style="height:20000px" data-n="hidden-content"></div></div>
+<script type="module" data-n="test-script">
+window.addEventListener("error", event => document.body.setAttribute("data-test-error", event.error?.stack || event.message));
+window.addEventListener("unhandledrejection", event => document.body.setAttribute("data-test-error", String(event.reason?.stack || event.reason)));
+const { capture_snapshot } = await import("../src/save/snapshot.model.js");
+const { render_screenshot } = await import("../src/save/screenshot.model.js");
+const capture = (0, eval)(`(${capture_snapshot.toString()})`);
+const main = document.querySelector("main"), aside = document.querySelector("aside");
+function assert(value, message) { if (!value) throw new Error(message); }
+main.scrollTo({left:55,top:321,behavior:"instant"});aside.scrollTop = 234;
+const before = document.body.innerHTML;
+const snapshot = await capture(true);
+assert(snapshot.svg.includes('data-n="main-scroll"') && !snapshot.svg.includes('data-n="sidebar"') && !snapshot.svg.includes('data-n="fixed-header"') && !snapshot.svg.includes('data-n="hidden-scroll"'), "应识别主内容区域，排除外部 Header、长侧栏、小滚动框和隐藏区域");
+assert(snapshot.width === main.scrollWidth+6 && snapshot.height === main.scrollHeight+6, "应包含完整主内容及边框，不能只保存当前可见部分");
+assert(main.scrollLeft === 55 && main.scrollTop === 321 && aside.scrollTop === 234 && document.body.innerHTML === before, "截图不应滚动或修改原始内容容器");
+const bitmap = await createImageBitmap(await render_screenshot({...snapshot,pixel_ratio:1}));
+const context = new OffscreenCanvas(bitmap.width,bitmap.height).getContext("2d");context.drawImage(bitmap,0,0);
+const bottom = [...context.getImageData(500,bitmap.height-25,1,1).data];
+assert(bottom[2]>150 && bottom[0]<80 && bottom[3]===255, "PNG 必须覆盖滚动容器末尾的蓝色内容");
+bitmap.close();
+const plain = document.createElement("div");plain.setAttribute("data-n", "plain-scroll");
+plain.style.cssText = "position:fixed;top:80px;bottom:20px;left:200px;right:20px;overflow:auto";
+while (main.firstChild) plain.append(main.firstChild);main.replaceWith(plain);
+const without_main = await capture(true);
+assert(without_main.svg.includes('data-n="plain-scroll"') && !without_main.svg.includes('data-n="sidebar"'), "无 main 标签时也应自动识别主要滚动容器");
+document.body.setAttribute("data-test-passed", "");
+</script></body></html>

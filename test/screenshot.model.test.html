@@ -1,0 +1,80 @@
+<!doctype html><html lang="zh-CN" data-n="test-document"><head data-n="test-head"><meta charset="utf-8" data-n="test-charset">
+<style data-n="test-style">
+html{scroll-behavior:smooth}body{margin:0;width:1103px;background:white}
+#fixed{position:fixed;top:0;left:0;width:130px;height:40px;background:#ffdd00}
+#sticky{position:sticky;top:0;height:30px;background:#222}
+#red{height:600px;background:#c83232}#green{height:600px;background:#32c832}#blue{height:443px;background:#3232c8}
+#drawing{position:absolute;left:50px;top:100px}#picture{position:absolute;left:50px;top:150px}
+#shadow{position:absolute;left:100px;top:200px;width:160px;height:80px}
+</style></head><body data-n="test-body">
+<div id="fixed" data-n="fixed-header"></div><div id="red" data-n="red-band"></div><div id="sticky" data-n="sticky-heading">吸顶标题</div><div id="green" data-n="green-band"></div><div id="blue" data-n="blue-band"></div>
+<canvas id="drawing" width="48" height="24" data-n="canvas-content"></canvas>
+<img id="picture" src="./snapshot-resource.svg" width="32" height="24" data-n="image-content">
+<div id="shadow" data-n="shadow-host"><span data-n="light-content">插槽内容</span></div>
+<script type="module" data-n="test-script">
+window.addEventListener("error", event => document.body.setAttribute("data-test-error", event.error?.stack || event.message));
+window.addEventListener("unhandledrejection", event => document.body.setAttribute("data-test-error", String(event.reason?.stack || event.reason)));
+const { capture_snapshot, fetch_snapshot_resource } = await import("../src/save/snapshot.model.js");
+const { capture_page_screenshot, render_screenshot } = await import("../src/save/screenshot.model.js");
+function assert(value, message) { if (!value) throw new Error(message); }
+async function rejects(action, text) {
+  let error; try { await action(); } catch (caught) { error = caught; }
+  assert(error?.message.includes(text), `应提示 ${text}，实际：${error?.message}`);
+}
+const resource_calls = [];
+globalThis.chrome = { runtime: { sendMessage: async message => {
+  resource_calls.push(message);
+  try { return { success: true, ...await fetch_snapshot_resource(message.url) }; }
+  catch { return { success: false, error: "资源读取失败" }; }
+} } };
+const ctx = document.querySelector("#drawing").getContext("2d");ctx.fillStyle = "#ee6633";ctx.fillRect(0,0,48,24);
+document.querySelector("#shadow").attachShadow({mode:"open"}).innerHTML = '<style data-n="shadow-style">p{margin:0;width:120px;height:40px;background:#471c7b;color:white}</style><p data-n="shadow-text">Shadow DOM</p><slot data-n="shadow-slot"></slot>';
+for (const isolated of [false, true]) {
+  const frame = document.createElement("iframe");frame.setAttribute("data-n", isolated ? "isolated-frame" : "same-origin-frame");
+  frame.style.cssText = `position:absolute;left:300px;top:${isolated ? 400 : 300}px;width:200px;height:60px`;
+  if (isolated) frame.setAttribute("sandbox", "");
+  const loaded = new Promise(resolve => frame.onload = resolve);
+  frame.srcdoc = '<html data-n="frame-document"><head data-n="frame-head"></head><body data-n="frame-body">' + (isolated ? '不可访问的内嵌内容' : '同源内嵌内容') + '</body></html>';
+  document.body.append(frame);await loaded;
+}
+await Promise.all([...document.images].map(image => image.decode()));
+scrollTo({left:75,top:321,behavior:"instant"});await new Promise(requestAnimationFrame);
+let scroll_events = 0;window.addEventListener("scroll", () => scroll_events++);
+const before = document.body.innerHTML, original_x = scrollX, original_y = scrollY;
+const expected_width = document.scrollingElement.scrollWidth, expected_height = document.scrollingElement.scrollHeight;
+const capture = (0, eval)(`(${capture_snapshot.toString()})`);
+const snapshot = await capture(true);
+assert(snapshot.width === expected_width && snapshot.height === expected_height, "普通页面应包含完整文档而非当前视口");
+assert(snapshot.svg.includes("<foreignObject") && snapshot.svg.includes("Shadow DOM") && snapshot.svg.includes("插槽内容"), "应通过 SVG 保留开放 Shadow DOM 和插槽内容");
+assert(!snapshot.svg.includes("<template") && !snapshot.svg.includes("<iframe") && snapshot.svg.includes("同源内嵌内容"), "SVG 应展开 Shadow DOM 和同源 iframe，不能依赖活动的内嵌文档");
+assert(snapshot.warnings.some(text => text.includes("内嵌页面")) && !snapshot.svg.includes("不可访问的内嵌内容"), "不可访问的 iframe 应明确提示缺失");
+assert(resource_calls.length === 1 && snapshot.svg.includes("data:image/svg+xml"), "图片应复用后台资源打包能力");
+assert(document.body.innerHTML === before && scrollX === original_x && scrollY === original_y && !scroll_events, "SVG 捕获不能滚动、修改原页面或触发滚动事件");
+assert(getComputedStyle(document.querySelector("#fixed")).position === "fixed" && getComputedStyle(document.querySelector("#sticky")).position === "sticky", "原始固定和吸顶样式必须保持不变");
+
+const rendered = {...snapshot,pixel_ratio:1.5};
+const blob = await render_screenshot(rendered), bitmap = await createImageBitmap(blob);
+assert(blob.type === "image/png" && bitmap.width === Math.round(snapshot.width*1.5) && bitmap.height === Math.round(snapshot.height*1.5), "应按像素比例生成完整 PNG");
+const context = new OffscreenCanvas(bitmap.width,bitmap.height).getContext("2d");context.drawImage(bitmap,0,0);
+const pixel = (x,y) => [...context.getImageData(Math.round(x*1.5),Math.round(y*1.5),1,1).data];
+assert(pixel(500,100).join() === "200,50,50,255" && pixel(500,800).join() === "50,200,50,255" && pixel(500,1600).join() === "50,50,200,255", "SVG 应渲染页面顶部、中部和末尾");
+assert(pixel(110,20).join() === "255,221,0,255" && pixel(500,610).join() === "34,34,34,255", "固定头部和吸顶标题应各保留一次并按文档位置呈现");
+assert(pixel(60,110).join() === "238,102,51,255" && pixel(60,160).join() === "36,118,200,255", "Canvas 和内嵌图片必须实际出现在 PNG 中");
+assert(pixel(110,230).join() === "71,28,123,255", "开放 Shadow DOM 样式必须实际渲染");
+bitmap.close();
+const progress = [], injections = [];
+const client = {scripting:{executeScript:async options => {injections.push(options);return [{result:rendered}];}}};
+const result = await capture_page_screenshot(client,{id:7},message=>progress.push(message));
+assert(injections.length === 1 && injections[0].target.tabId === 7 && injections[0].func.name === "capture_snapshot" && injections[0].args[0] === true, "应只注入一次 SVG 快照，不依赖可见区域截图 API");
+assert(result.blob.type === "image/png" && result.warnings.length === snapshot.warnings.length && progress.length === 2 && progress.at(-1).includes("SVG"), "应传递打包、渲染阶段和资源警告");
+client.scripting.executeScript = async () => [{error:"injection denied"}];
+await rejects(()=>capture_page_screenshot(client,{id:7}),"injection denied");
+await rejects(()=>render_screenshot({...snapshot,svg:"<svg broken"}),"SVG 截图渲染失败");
+await rejects(()=>render_screenshot({...snapshot,width:Infinity}),"有效的 SVG");
+await rejects(()=>render_screenshot({...snapshot,height:40000,pixel_ratio:1}),"图片尺寸限制");
+chrome.runtime.sendMessage = async () => ({success:false});
+const failed = await capture(true);
+assert(failed.warnings.some(text=>text.includes("未能打包")), "资源失败必须反馈，不能静默输出缺图的截图");
+assert(scrollX === original_x && scrollY === original_y && document.body.innerHTML === before, "渲染或资源失败也不能改变原页面");
+document.body.setAttribute("data-test-passed", "");
+</script></body></html>

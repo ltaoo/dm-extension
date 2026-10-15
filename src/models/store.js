@@ -3,6 +3,7 @@ import { createInputStore, createCheckboxStore } from "../../assets/vendor/src/d
 import { add_profile_domain, default_settings, status_key, validate_settings } from "./sync.model.js";
 import { comparison_groups_key, default_comparison_group, group_comparison_records, normalize_group_names } from "../compare/compare.model.js";
 import { capture_snapshot } from "../save/snapshot.model.js";
+import { capture_page_screenshot } from "../save/screenshot.model.js";
 import { USER_SCRIPT_TYPES, build_list_code, build_script_code, describe_rule, describe_shape, detection_rules_key, evaluate_detection_rule, hostname_of, normalize_detection_rules, number_rules, read_baseline } from "../compare/detection.model.js";
 import { build_clip_document, clip_options_key, clip_region, clips_key, default_clip_options, normalize_clip_options, normalize_clip_records } from "../clip/clip.model.js";
 
@@ -573,7 +574,7 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
       page_saving_.as(true);
       screenshot_saving_.as(screenshot);
       download_status_.as("reading");
-      download_message_.as(screenshot ? "正在截取当前可见区域。" : "正在冻结页面样式并打包资源，请保持面板打开。");
+      download_message_.as(screenshot ? "正在识别主内容并生成长截图，请保持面板打开。" : "正在冻结页面样式并打包资源，请保持面板打开。");
       download_warnings_.as([]);
       let download_url;
       try {
@@ -587,10 +588,10 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
         if (new TextEncoder().encode(filename).length > 255) throw new Error("文件名过长：请缩短文件名后重试");
         let blob;
         if (screenshot) {
-          if (!client.tabs.captureVisibleTab) throw new Error("当前浏览器不支持截图");
-          const image = await client.tabs.captureVisibleTab(tab.windowId, { format: "png" });
-          if (!image?.startsWith("data:image/png")) throw new Error("未获取到截图");
-          blob = await (await fetch(image)).blob();
+          const result = await capture_page_screenshot(client, tab, (message) => download_message_.as(message));
+          blob = result.blob;
+          tab_title_.as(result.title || tab_title_.value);
+          download_warnings_.as(result.warnings);
         } else {
           const [injected] = await client.scripting.executeScript({ target: { tabId: tab.id }, func: capture_snapshot });
           const snapshot = injected?.result;
@@ -1106,7 +1107,7 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
       download_status_label: combine({ busy: busy_, available: download_available_, status: download_status_, screenshot: screenshot_saving_ }, (s) => {
         if (s.busy) return "正在获取页面信息";
         if (!s.available) return "当前页面无法保存";
-        return { idle: "准备保存", reading: s.screenshot ? "正在截取可见区域" : "正在打包页面", sending: "正在开始下载", success: "已开始下载", error: "保存失败" }[s.status];
+        return { idle: "准备保存", reading: s.screenshot ? "正在生成长截图" : "正在打包页面", sending: "正在开始下载", success: "已开始下载", error: "保存失败" }[s.status];
       }),
       download_message: combine({ busy: busy_, available: download_available_, message: download_message_ }, (s) => {
         if (s.busy) return "请稍候…";

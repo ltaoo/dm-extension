@@ -212,6 +212,7 @@ for (const page of ["cookie-sync", "save-page", "settings"]) {
     assert(heading.textContent === "保存页面" && !node("save-page").hidden, "保存页面菜单应打开独立页面");
     assert(page_reads === 0 && downloads.length === 0, "进入保存页面不能自动抓取或下载");
     assert(node("download-source-title").textContent === "示例页面" && node("download-source-url").textContent === tab_url, "保存前应展示轻量读取的页面标题和地址");
+    assert(node("download-screenshot-button").textContent === "保存长截图" && node("download-scope").textContent.includes("无需滚动页面"), "截图入口应明确提供整页长截图并说明操作限制");
     assert(node("download-filename-input").placeholder === "示例页面.html" && node("download-status-title").textContent === "准备保存", "应显示默认文件名与准备状态");
     let release;
     page_read_gate = new Promise((resolve) => { release = resolve; });
@@ -230,6 +231,22 @@ for (const page of ["cookie-sync", "save-page", "settings"]) {
     node("download-page-button").click();
     for (let attempts = 0; cookie$.state.page_saving.value && attempts < 120; attempts += 1) await tick();
     assert(downloads.at(-1).filename === "自定义_归档.html", "自定义文件名应清理非法字符，不能重复添加扩展名");
+    const execute_script = chrome.scripting.executeScript;
+    let release_capture;
+    const capture_gate = new Promise(resolve => { release_capture = resolve; });
+    chrome.scripting.executeScript = async ({ func, args }) => {
+      assert(func.name === "capture_snapshot" && args[0] === true, "长截图应使用 SVG 快照模式");
+      await capture_gate;
+      return [{ result: { svg: '<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20"><rect width="40" height="20" fill="red"/></svg>', width:40, height:20, pixel_ratio:1, warnings:["SVG 图片缺失提示"] } }];
+    };
+    node("download-screenshot-button").click();
+    await tick();
+    assert(node("download-status-title").textContent === "正在生成长截图" && node("download-page-button").disabled && node("download-screenshot-button").disabled && node("download-filename-input").disabled, "长截图期间应显示阶段并禁用重复保存和编辑");
+    release_capture();
+    for (let attempts = 0; cookie$.state.page_saving.value && attempts < 120; attempts += 1) await tick();
+    assert(downloads.at(-1).filename === "自定义_归档.png" && node("download-status-title").textContent === "已开始下载", "长截图应通过现有下载流程保存 PNG 并恢复界面");
+    assert(node("download-warning").textContent === "SVG 图片缺失提示", "SVG 资源缺失必须在界面中提示");
+    chrome.scripting.executeScript = execute_script;
     assert(node("download-footer").getBoundingClientRect().bottom <= 580 && node("download-source").getBoundingClientRect().right <= 780, "保存页面和底部操作不能溢出插件面板");
   }
 }

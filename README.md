@@ -33,7 +33,7 @@
 | --- | --- | --- |
 | Cookie | 分页查看当前站点 Cookie（含 HttpOnly），复制全部或已选项，将当前域名添加到同步配置 | 弹窗 → Cookie |
 | Cookie 同步 | 管理多个同步接口、域名范围、加密方式与定时任务 | 弹窗 → Cookie 同步 |
-| 保存页面 | 下载当前页面的 HTML 快照，或保存当前可见区域的 PNG 截图 | 弹窗 → 保存页面 |
+| 保存页面 | 下载当前页面的 HTML 快照，或无需滚动生成 PNG 长截图 | 弹窗 → 保存页面 |
 | 设置 | 配置域名解析规则，查看项目介绍与版本 | 弹窗 → 设置 → 保存页面 / 关于 |
 
 项目使用原生 JavaScript ES modules、Chrome Extensions API、Timeless 0.33.0、dmui 组件与 CryptoJS 4.2.0。运行所需的第三方资源均随仓库提供。
@@ -50,7 +50,7 @@
 
 ![Cookie 同步页面：接口配置、定时同步与域名列表](assets/screenshots/cookie-sync.png)
 
-**保存页面**：设置文件名，保存 HTML 页面快照或当前可见区域的 PNG 截图。
+**保存页面**：设置文件名，保存 HTML 页面快照或整页 PNG 长截图（下图为旧版界面，截图按钮现为「保存长截图」）。
 
 ![保存页面：来源信息、文件名与保存操作](assets/screenshots/save-page.png)
 
@@ -89,7 +89,7 @@
 
 1. 打开目标网页，在弹窗主菜单选择「保存页面」。
 2. 按需填写文件名，留空时使用页面标题。
-3. 点击「保存当前页面」下载 HTML 快照，保存期间保持弹窗打开；需要当前可见区域的图片时，点击「保存截图」下载 PNG。
+3. 点击「保存当前页面」下载 HTML 快照；需要整页图片时，点击「保存长截图」下载 PNG。长截图会自动识别主内容区域，展开内容副本并通过 SVG 渲染，无需滚动原页面；检测到独立内容容器时仅保存该区域，排除外部 Header 和侧栏。保存期间保持弹窗打开；图片或字体无法打包时会显示缺失提示。
 
 ## 权限与数据
 
@@ -127,7 +127,7 @@ src/background.js      # Service Worker：消息与定时任务
 src/popup/             # 弹窗入口与导航
 src/pages/             # Cookie / Cookie 同步 / 保存页面 / 设置及保留模块的 View
 src/models/            # 弹窗业务状态、Cookie 同步与加密
-src/save/              # HTML 快照捕获与资源打包
+src/save/              # HTML 快照捕获、资源打包与 SVG 长截图渲染
 src/compare/           # 保留的快照对比、预览、规则模型与提取沙箱
 src/clip/              # 保留的区域选择、样式冻结、结果页与自检
 assets/vendor/         # 本地运行时、组件与第三方许可证
@@ -151,7 +151,7 @@ python3 -m http.server 8791 --bind 127.0.0.1
 | 检查范围 | 测试文件（位于 `test/`） |
 | --- | --- |
 | Cookie 与界面偏好 | [popup.cookie.test.html](test/popup.cookie.test.html)、[store.preferences.test.html](test/store.preferences.test.html) |
-| 页面保存 | [snapshot.model.test.html](test/snapshot.model.test.html) |
+| 页面保存 | [snapshot.model.test.html](test/snapshot.model.test.html)、[screenshot.model.test.html](test/screenshot.model.test.html)、[screenshot.container.test.html](test/screenshot.container.test.html) |
 | 快照与对比 | [compare.model.test.html](test/compare.model.test.html)、[compare.render.test.html](test/compare.render.test.html)、[compare.preview.test.html](test/compare.preview.test.html) |
 | 规则与脚本 | [detection.model.test.html](test/detection.model.test.html)、[detection.script.test.html](test/detection.script.test.html)、[detection.list.test.html](test/detection.list.test.html) |
 | 弹窗对比与检测 | [popup.savepage.test.html](test/popup.savepage.test.html)、[popup.detect.test.html](test/popup.detect.test.html)、[popup.detect.script.test.html](test/popup.detect.script.test.html) |
@@ -164,7 +164,7 @@ python3 -m http.server 8791 --bind 127.0.0.1
 
 - **Cookie**：刷新、分页、复制全部与已选项、复制域名，以及将当前域名添加到指定同步配置。
 - **Cookie 同步**：新增与切换配置、保存、立即同步、定时同步与失败状态；确认复制勾选与同步范围独立，空范围不上传。
-- **保存页面**：自定义文件名、HTML 中文编码与样式、图片和字体打包、资源失败提示，以及 PNG 截图与内部页面禁用状态。
+- **保存页面**：自定义文件名、HTML 中文编码与样式、图片和字体打包、资源失败提示，以及 PNG 长截图的主区域识别、底部内容、固定导航、原页面状态保持与内部页面禁用状态。
 - **设置**：切换「保存页面 / 关于」，编辑域名解析规则，确认版本显示。
 
 ### 更新版本与资源
@@ -187,7 +187,7 @@ python3 -m http.server 8791 --bind 127.0.0.1
 ## 已知限制
 
 - **HTML 快照**：冻结当前样式并打包可读取的图片与字体，移除脚本；不保留网页交互。资源读取失败、跨域画布或无法读取的内嵌页面可能造成缺失，保存页会显示相应提示。
-- **PNG 截图**：仅保存当前可见区域，不是整页长截图。
+- **PNG 长截图**：自动选择主内容区域，在副本中展开并经 SVG `foreignObject` 渲染为 PNG，不滚动或修改原页面。识别到独立容器时仅保存其内容，普通页面保存整个文档。图片、字体、Canvas 和开放的 Shadow DOM 复用快照打包能力；资源失败会显示警告。无法保证受污染的 Canvas、关闭的 Shadow DOM、跨域 iframe、虚拟列表和未加载内容完整；复杂布局与固定浮层可能和屏幕显示略有差异。单边最多 32,767 像素，总面积最多 64 Mi 像素，超限请缩小网页后重试。生成期间请保持弹窗打开。
 - **Cookie 同步**：需要自行提供兼容的同步服务端；定时同步受浏览器运行状态影响，休眠时不保证准点。
 
 ## 参与贡献

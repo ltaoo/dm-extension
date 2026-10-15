@@ -380,18 +380,26 @@ for (const format of ["html", "png"]) {
   store.methods.dispose();
 }
 
-// 截图使用当前窗口的可见区域，不解析 HTML；沿用文件名和下载反馈。
+// SVG 长截图复用快照引擎；无需可见区域截图 API，并沿用下载反馈。
 {
   const client = create_client({ "popup-page": "save-page" });
-  const calls = [];
+  const calls = [], actions = [];
   client.tabs.query = async () => [{ id: 1, windowId: 7, url: "https://example.com/", title: "截图页面" }];
-  client.tabs.captureVisibleTab = async (...args) => { calls.push(args); return "data:image/png;base64,iVBORw0KGgo="; };
+  client.scripting.executeScript = async ({ func, args }) => {
+    assert(func.name === "capture_snapshot" && args[0] === true, "长截图必须使用 SVG 快照模式");
+    actions.push(args[0]);
+    return [{ result: { svg: '<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20"><rect width="40" height="20" fill="red"/></svg>', width:40, height:20, pixel_ratio:1, title:"截图页面", warnings:["测试图片未能打包"] } }];
+  };
   client.downloads.download = async (options) => { calls.push(options); return 1; };
   const store = await open(client);
   store.ui.download_name$.setValue("截图.HTML");
   await store.methods.download_page("png");
-  assert(calls[0][0] === 7 && calls[0][1].format === "png" && calls[1].filename === "截图.png", "截图应调用可见区域 API 并使用 PNG 扩展名");
-  assert(client.page_reads === 0 && store.state.download_status.value === "success" && !store.state.screenshot_saving.value, "截图不能触发 HTML 解析，完成后应恢复状态");
+  assert(store.state.download_status.value === "success", `长截图应成功：${store.state.download_message.value}`);
+  assert(calls.length === 1 && calls[0].filename === "截图.png", "SVG 截图应通过现有下载流程使用 PNG 文件名");
+  assert(actions.length === 1 && !store.state.screenshot_saving.value && store.state.download_warnings.value[0] === "测试图片未能打包", "应只捕获一次，并保留资源警告、恢复操作状态");
+  client.scripting.executeScript = async () => { throw new Error("capture failed"); };
+  await store.methods.download_page("png");
+  assert(store.state.download_status.value === "error" && store.state.download_message.value === "capture failed" && !store.state.page_saving.value && calls.length === 1, "SVG 截图失败不能触发下载，并应允许重试");
   store.methods.dispose();
 }
 
