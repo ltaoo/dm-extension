@@ -72,6 +72,10 @@
 window.addEventListener("error", (event) => document.body.setAttribute("data-test-error", event.message));
 window.addEventListener("unhandledrejection", (event) => document.body.setAttribute("data-test-error", String((event.reason && event.reason.message) || event.reason)));
 await import("../src/popup/popup.js");
+const { cookie$ } = await import("../src/models/store.js");
+for (let attempts = 0; cookie$.state.busy.value && attempts < 120; attempts += 1) await new Promise((resolve) => requestAnimationFrame(resolve));
+cookie$.methods.navigate("clip");
+
 
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const row_of = (title) => Array.from(document.querySelectorAll(".clip-record-row"))
@@ -79,8 +83,8 @@ const row_of = (title) => Array.from(document.querySelectorAll(".clip-record-row
 
 // —— 菜单与标题 ——
 const menu_labels = Array.from(document.querySelectorAll(".popup-menu-button")).map((button) => button.textContent.trim());
-if (!menu_labels.includes("剪藏")) throw new Error(`菜单应含「剪藏」，实际 ${menu_labels.join("、")}`);
-if (!document.querySelector('[n="menu-clip"]')) throw new Error("菜单应有剪藏按钮");
+if (menu_labels.includes("剪藏")) throw new Error("剪藏入口应隐藏");
+if (document.querySelector('[n="menu-clip"]')) throw new Error("剪藏按钮应隐藏");
 const heading = document.querySelector(".popup-title");
 if (!heading || heading.textContent.trim() !== "剪藏") throw new Error(`标题应为「剪藏」：${heading && heading.textContent}`);
 const clip_page = document.querySelector("#clip-page");

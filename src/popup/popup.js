@@ -1,9 +1,12 @@
-import { cookie$ } from "../models/store.js";
+import "../../assets/vendor/timeless.umd.min.js";
 import "../../assets/vendor/timeless.dom.umd.min.js";
 import "../../assets/vendor/timeless.web.umd.min.js";
+import { cookie$ } from "../models/store.js";
 import { Button } from "../../assets/vendor/src/dmui.js";
 import CookiePageView from "../pages/cookie.js";
+import CookieSyncPageView from "../pages/cookie-sync.js";
 import SavePageView from "../pages/savepage.js";
+import DownloadPageView from "../pages/download.js";
 import ClipPageView from "../pages/clip.js";
 import DetectPageView from "../pages/detect.js";
 import SettingsPageView from "../pages/settings.js";
@@ -31,18 +34,27 @@ function PopupView() {
           },
         }, [View({ class: "popup-menu-item", attributes: { n: `menu-${item.name}-content` } }, [
           Icon({ name: item.icon, size: 21, attributes: { n: `menu-${item.name}-icon`, "aria-hidden": "true" } }),
-          View({ attributes: { n: `menu-${item.name}-label` } }, [item.title]),
+          View({ attributes: { n: `menu-${item.name}-label` } }, item.name === "cookie-sync" ? [
+            View({ attributes: { n: "menu-cookie-sync-cookie-label" } }, ["Cookie"]),
+            View({ attributes: { n: "menu-cookie-sync-sync-label" } }, ["同步"]),
+          ] : [item.title]),
         ])])),
       ),
       View({ class: "popup-sidebar-footer popup-version", attributes: { n: "page-version", "aria-label": "扩展版本" } }, [state.version]),
     ]),
     View({ class: "popup-main", attributes: { n: "popup-main", role: "main" } }, [
       View({ class: "popup-header", attributes: { n: "page-header" } }, [
-        View({ class: "popup-title", attributes: { n: "page-heading", role: "heading", "aria-level": "1" } }, [state.title]),
-        View({ class: "popup-caption", attributes: { n: "page-brand" } }, ["Download & Manage"]),
+        View({ class: "popup-heading", attributes: { n: "page-heading-group" } }, [
+          View({ class: "popup-title", attributes: { n: "page-heading", role: "heading", "aria-level": "1" } }, [state.title]),
+          View({ class: "cookie-url", attributes: { n: "page-url", title: state.url, hidden: computed(state.page, (page) => page !== "cookie" ? true : undefined) } }, [computed(state.url, (url) => url || "未获取到当前页面 Cookie")]),
+        ]),
+        Button({ store: controls.refresh$, attributes: { n: "refresh-button", hidden: computed(state.page, (page) => page !== "cookie" ? true : undefined) } }, [computed(state.loading, (loading) => loading ? "读取中…" : "刷新")]),
+        Button({ store: controls.add_profile$, attributes: { n: "add-profile-button", hidden: computed(state.page, (page) => page !== "cookie-sync" ? true : undefined) } }, ["新增"]),
       ]),
       View({ class: "popup-pages", attributes: { n: "popup-pages" } }, [
         CookiePageView({ store: cookie$ }),
+        CookieSyncPageView({ store: cookie$ }),
+        DownloadPageView({ store: cookie$ }),
         SavePageView({ store: cookie$ }),
         ClipPageView({ store: cookie$ }),
         DetectPageView({ store: cookie$ }),

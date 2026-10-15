@@ -430,10 +430,14 @@ export function build_comparison_reports(records) {
 // 单条记录的预览：与对比页相同的解析与安全处理（去 script/CSP/refresh、注入 base），但不注入差异高亮。
 export function build_preview_document(record) {
   const document = parse_record(record);
-  document.querySelectorAll('meta[http-equiv="Content-Security-Policy" i],meta[http-equiv="refresh" i]').forEach((element) => element.remove());
+  document.querySelectorAll('meta[http-equiv="Content-Security-Policy" i],meta[http-equiv="refresh" i],meta[charset],meta[http-equiv="Content-Type" i]').forEach((element) => element.remove());
+  // 下载文件没有原站的 HTTP 编码头，序列化后的 UTF-8 必须在文件内声明。
+  const charset = document.createElement("meta");
+  charset.setAttribute("charset", "utf-8");
+  charset.setAttribute("data-n", "page-charset");
   const base = document.createElement("base");
   base.href = record.url;
-  document.head.prepend(base);
+  document.head.prepend(charset, base);
   return "<!doctype html>\n" + document.documentElement.outerHTML;
 }
 

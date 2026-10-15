@@ -1,21 +1,9 @@
-import { ArrayField, Button, Card, Checkbox, Input, Label, Select, Tabs } from "../../assets/vendor/src/dmui.js";
+import { ArrayField, Button, Card, Input, Label, Select } from "../../assets/vendor/src/dmui.js";
 
-const { View, computed, combine, classNames } = window.Timeless;
-
-function Field(name, title, control) {
-  return View({ class: "settings-field", attributes: { n: `${name}-field` } }, [
-    Label({ attributes: { n: `${name}-label`, id: `${name}-label` } }, [title]),
-    control,
-  ]);
-}
+const { View, Img, Link, computed, combine, classNames } = window.Timeless;
 
 export default function SettingsPageView({ store }) {
   const { state, ui } = store;
-  const input = (name, field, attributes = {}) => Input({
-    store: ui.inputs[field],
-    rootAttributes: { n: `${name}-wrapper` },
-    attributes: { n: `${name}-input`, "aria-labelledby": `${name}-label`, ...attributes },
-  });
   return View({
     class: computed(state.page, (page) => `settings-page popup-page ${page === "settings" ? "page-enter" : "page-exit"}`),
     attributes: {
@@ -40,79 +28,7 @@ export default function SettingsPageView({ store }) {
     View({
       class: "settings-panel",
       attributes: {
-        n: "cookie-sync-settings", id: "cookie-sync-settings", role: "region", "aria-label": "Cookie 同步设置",
-        hidden: computed(state.settings_menu, (menu) => menu === "cookie-sync" ? undefined : true),
-        inert: computed(state.settings_menu, (menu) => menu === "cookie-sync" ? undefined : true),
-      },
-    }, [
-      View({ class: "profile-toolbar", attributes: { n: "profile-toolbar", inert: computed(state.busy, (busy) => busy ? true : undefined) } }, [
-        Tabs({
-          class: "profile-tabs", attributes: { n: "profile-tabs", "aria-label": "同步接口配置" },
-          each: state.profiles, key: "id",
-          render(profile) {
-            const active = computed(state.active_profile, (id) => id === profile.id);
-            return Button({
-              store: ui.profile_button(profile.id),
-              class: classNames(["profile-tab", computed(active, (selected) => selected ? "is-active" : "")]),
-              attributes: { n: "profile-tab", "data-profile-id": profile.id, role: "tab", "aria-selected": computed(active, String), tabindex: computed(active, (selected) => selected ? "0" : "-1") },
-            }, [computed(state.profile_titles, (titles) => titles[profile.id])]);
-          },
-        }),
-        Button({ store: ui.add_profile$, attributes: { n: "add-profile-button" } }, ["新增"]),
-        Button({ store: ui.remove_profile$, attributes: { n: "remove-profile-button", title: "删除当前配置，至少保留一个已保存配置" } }, ["删除"]),
-      ]),
-      View({ class: "settings-scroll", attributes: { n: "settings-scroll" } }, [
-        View({ attributes: { n: "sync-fields", inert: computed(state.busy, (busy) => busy ? true : undefined) } }, [
-          Card({ class: "settings-card", attributes: { n: "sync-panel" } }, [
-            Field("profile-name", "配置名称", input("profile-name", "name")),
-            Field("endpoint", "同步接口", input("endpoint", "endpoint", { spellcheck: "false" })),
-            View({ class: "settings-row schedule-row", attributes: { n: "schedule-row" } }, [
-              Checkbox({ store: ui.enabled$, text: "定时同步", attributes: { n: "enabled-input", "aria-label": "定时同步" }, textAttributes: { n: "enabled-label" } }),
-              Field("interval", "间隔（分钟）", input("interval", "intervalMinutes", { min: "0.5", max: "1440", step: "0.5" })),
-            ]),
-          ]),
-          Card({ class: "settings-card", attributes: { n: "domain-panel" } }, [
-            View({ class: "section-title", attributes: { n: "domain-heading", role: "heading", "aria-level": "2" } }, ["当前接口的同步范围"]),
-            View({ class: "domain-list-heading", attributes: { n: "domain-list-heading" } }, [
-              Label({ attributes: { n: "domains-label", id: "domains-label" } }, ["域名列表"]),
-              Button({ store: ui.add_domain$, attributes: { n: "add-domain-button" } }, ["添加域名"]),
-            ]),
-            ArrayField({
-              store: ui.domains$, class: "domain-list", attributes: { n: "domains-array-field", "aria-labelledby": "domains-label" },
-              render({ idx, field }) {
-                return View({ class: "domain-row", attributes: { n: "domain-row" } }, [
-                  Checkbox({ store: field.fields.enabled.input, attributes: { n: "domain-enabled-input", "aria-label": `启用第 ${idx + 1} 条域名规则` } }),
-                  Input({ store: field.fields.domain.input, rootAttributes: { n: "domain-input-wrapper" }, attributes: { n: "domain-input", "aria-label": `第 ${idx + 1} 条域名`, spellcheck: "false" } }),
-                  Button({ store: field.remove$, attributes: { n: "remove-domain-button", "aria-label": `删除第 ${idx + 1} 条域名规则` } }, ["删除"]),
-                ]);
-              },
-            }),
-            View({ class: "page-help", attributes: { n: "domain-list-help" } }, ["仅同步勾选的域名，空白行不参与同步。支持子域和完整 URL。"]),
-          ]),
-          Card({ class: "settings-card", attributes: { n: "encryption-panel" } }, [
-            Field("encryption", "加密方式", Select({ store: ui.encryption$, attributes: { n: "encryption-input", "aria-labelledby": "encryption-label" } })),
-            View({ class: "settings-row", attributes: { n: "encryption-credentials", hidden: computed(state.encrypted, (encrypted) => encrypted ? undefined : true) } }, [
-              Field("uuid", "UUID", input("uuid", "encryption.uuid", { autocomplete: "off", spellcheck: "false" })),
-              Field("password", "密码", input("password", "encryption.password", { autocomplete: "off" })),
-            ]),
-          ]),
-        ]),
-      ]),
-      View({ class: "settings-footer", attributes: { n: "settings-footer" } }, [
-        View({ class: "settings-feedback", attributes: { n: "settings-feedback" } }, [
-          View({ class: classNames(["sync-status", computed(state.status, (status) => status.error ? "error" : "")]), attributes: { n: "sync-status", role: "status", title: state.sync_message } }, [state.sync_message]),
-          View({ class: "settings-message", attributes: { n: "settings-message", role: "status", title: state.message, hidden: computed(state.message, (message) => !message ? true : undefined) } }, [state.message]),
-        ]),
-        View({ class: "settings-actions", attributes: { n: "sync-actions" } }, [
-          Button({ store: ui.save$, attributes: { n: "save-button" } }, ["保存当前"]),
-          Button({ store: ui.sync$, attributes: { n: "sync-button" } }, ["保存并同步当前"]),
-        ]),
-      ]),
-    ]),
-    View({
-      class: "settings-panel",
-      attributes: {
-        n: "savepage-settings", id: "savepage-settings", role: "region", "aria-label": "SavePage 解析设置",
+        n: "savepage-settings", id: "savepage-settings", role: "region", "aria-label": "保存页面设置",
         hidden: computed(state.settings_menu, (menu) => menu === "savepage" ? undefined : true),
         inert: computed(state.settings_menu, (menu) => menu === "savepage" ? undefined : true),
       },
@@ -140,6 +56,36 @@ export default function SettingsPageView({ store }) {
       View({ class: "settings-footer", attributes: { n: "parsers-footer" } }, [
         View({ class: "settings-feedback", attributes: { n: "parsers-feedback" } }, [
           View({ class: "settings-message", attributes: { n: "parsers-message", role: "status", title: state.parsers_message, hidden: computed(state.parsers_message, (message) => !message ? true : undefined) } }, [state.parsers_message]),
+        ]),
+      ]),
+    ]),
+    View({
+      class: "settings-panel",
+      attributes: {
+        n: "about-settings", id: "about-settings", role: "region", "aria-label": "关于",
+        hidden: computed(state.settings_menu, (menu) => menu === "about" ? undefined : true),
+        inert: computed(state.settings_menu, (menu) => menu === "about" ? undefined : true),
+      },
+    }, [
+      View({ class: "settings-scroll", attributes: { n: "about-scroll" } }, [
+        Card({ class: "settings-card about-card dm-text-base", attributes: { n: "about-card" } }, [
+          View({ class: "about-brand", attributes: { n: "about-brand" } }, [
+            Img({ src: "../../assets/icons/logo.svg", attributes: { n: "about-logo", alt: "Download & Manage logo", width: 64, height: 64 } }),
+            View({ attributes: { n: "about-identity" } }, [
+              View({ class: "dm-font-semibold", attributes: { n: "about-name", role: "heading", "aria-level": "2" } }, [state.app_name]),
+              View({ class: "dm-text-muted", attributes: { n: "about-version" } }, ["版本 ", state.version]),
+            ]),
+          ]),
+          View({ attributes: { n: "about-description" } }, [
+            "Download & Manage 是 ",
+            Link({ href: "https://github.com/ltaoo/wx_channels_download", target: "_blank", rel: "noopener noreferrer", class: "about-project-link", attributes: { n: "about-project-link" } }, ["wx_channels_download"]),
+            " 项目下载功能的配套浏览器插件，提供 Cookie 管理、同步和页面保存功能。",
+          ]),
+          View({ attributes: { n: "about-features", role: "list", "aria-label": "应用功能" } }, [
+            View({ attributes: { n: "about-cookie-feature", role: "listitem" } }, ["Cookie 管理：查看当前页面的 Cookie，复制全部或选中项，并将当前域名添加到同步配置。"]),
+            View({ attributes: { n: "about-sync-feature", role: "listitem" } }, ["Cookie 同步：管理多组接口配置，按域名规则定时同步，支持加密传输。"]),
+            View({ attributes: { n: "about-save-feature", role: "listitem" } }, ["保存页面：获取当前页面内容并下载为 HTML 文件。"]),
+          ]),
         ]),
       ]),
     ]),

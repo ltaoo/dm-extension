@@ -46,6 +46,20 @@ export function filter_cookies(cookies, filter) {
   });
 }
 
+export function add_profile_domain(profile, value) {
+  if (!profile) throw new Error("同步配置不存在");
+  const domains = domain_rules(typeof value === "string" ? value : "");
+  if (domains.length !== 1 || domains[0] === "*") throw new Error("当前页面域名无效");
+  const domain = domains[0];
+  const next = structuredClone(profile);
+  const rows = next.domainFilter.domains;
+  const matches = (row) => domain_rules(row.domain).includes(domain);
+  next.domainFilter.domains = rows.some(matches)
+    ? rows.map((row) => matches(row) ? { ...row, enabled: true } : row)
+    : [{ enabled: true, domain }, ...rows];
+  return next;
+}
+
 export function validate_settings(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("同步配置格式错误");
   const settings = structuredClone(value);
@@ -194,8 +208,8 @@ export function CookieSyncModel(client = chrome, request = fetch) {
       // ponytail: 后台操作串行；单接口请求最多等待 20 秒，高频同步时再按接口拆队列。
       const task = queue.then(async () => {
         await ready;
-        if (action === "save" || action === "sync") {
-          const profile = validate_settings(value);
+        if (["save", "sync", "add-domain"].includes(action)) {
+          const profile = validate_settings(action === "add-domain" ? add_profile_domain(profiles.find((item) => item.id === value?.id), value?.domain) : value);
           const exists = profiles.some((item) => item.id === profile.id);
           const next = exists ? profiles.map((item) => item.id === profile.id ? profile : item) : [...profiles, profile];
           await client.storage.local.set({ [settings_key]: { profiles: next } });

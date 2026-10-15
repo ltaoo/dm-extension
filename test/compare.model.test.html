@@ -159,6 +159,15 @@ if (preview.includes("Content-Security-Policy") || preview.includes('http-equiv=
 if (!preview.includes('<base href="https://p.test/a">')) throw new Error("预览应注入 base");
 if (preview.includes("[data-compare-")) throw new Error("预览不应注入对比高亮样式");
 
+// 下载的 UTF-8 文件不能依赖原站响应头，也不能沿用旧编码声明。
+for (const meta of ["", '<meta charset="gbk">', '<meta http-equiv="Content-Type" content="text/html; charset=gb2312">']) {
+  const html = build_preview_document({ url: "https://example.com/", html: `<html><head>${meta}</head><body>中文归档 😀</body></html>` });
+  const parsed = new DOMParser().parseFromString(html, "text/html");
+  if (parsed.head.firstElementChild.getAttribute("charset") !== "utf-8") throw new Error("UTF-8 编码声明应放在 head 最前面");
+  if (parsed.querySelectorAll("meta[charset]").length !== 1 || parsed.querySelector('meta[http-equiv="Content-Type" i]')) throw new Error("应删除冲突的旧编码声明");
+  if (!html.includes("中文归档 😀")) throw new Error("中文与表情应完整保留");
+}
+
 document.body.textContent = "compare model checks passed";
 document.body.setAttribute("data-test-passed", "");
 </script></body></html>

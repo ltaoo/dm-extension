@@ -5,7 +5,7 @@
   "version_name": "1.0.0",
   "minimum_chrome_version": "138",
   "description": "Download & Manage 浏览器扩展，集中管理站点数据与应用设置。",
-  "permissions": ["activeTab", "cookies", "scripting", "userScripts", "storage", "unlimitedStorage", "alarms", "clipboardWrite"],
+  "permissions": ["activeTab", "cookies", "scripting", "userScripts", "storage", "unlimitedStorage", "alarms", "clipboardWrite", "downloads"],
   "host_permissions": ["http://*/*", "https://*/*"],
   "icons": {
     "16": "assets/icons/icon-16.png",

@@ -1,7 +1,8 @@
 import "../../assets/vendor/timeless.umd.min.js";
 import { createInputStore, createCheckboxStore } from "../../assets/vendor/src/dmui.js";
-import { default_settings, status_key, validate_settings } from "./sync.model.js";
+import { add_profile_domain, default_settings, status_key, validate_settings } from "./sync.model.js";
 import { comparison_groups_key, default_comparison_group, group_comparison_records, normalize_group_names } from "../compare/compare.model.js";
+import { capture_snapshot } from "../save/snapshot.model.js";
 import { USER_SCRIPT_TYPES, build_list_code, build_script_code, describe_rule, describe_shape, detection_rules_key, evaluate_detection_rule, hostname_of, normalize_detection_rules, number_rules, read_baseline } from "../compare/detection.model.js";
 import { build_clip_document, clip_options_key, clip_region, clips_key, default_clip_options, normalize_clip_options, normalize_clip_records } from "../clip/clip.model.js";
 
@@ -9,10 +10,16 @@ const { ref, computed, combine, vm } = globalThis.Timeless;
 
 // 页面解析器：内置飞书域名 + 用户配置的域名规则共同决定。
 const PARSER_LABELS = { generic: "通用", feishu: "飞书文档" };
-const PAGE_TITLES = { cookie: "Cookie", savepage: "对比", clip: "剪藏", detect: "变更检测", settings: "设置" };
+const PAGE_TITLES = { cookie: "Cookie", "cookie-sync": "Cookie 同步", "save-page": "保存页面", savepage: "对比", clip: "剪藏", detect: "变更检测", settings: "设置" };
+const COOKIE_PAGE_SIZE = 50;
 const parsers_key = "page-parsers";
 const comparison_records_key = "comparison-records";
 const comparison_group_key = "comparison-group";
+
+function page_filename(name, extension = "html") {
+  const stem = name.trim().replace(/\.(?:html?|png)$/i, "").replace(/[\\/:*?"<>|\u0000-\u001f]/g, "_").slice(0, 120).replace(/[. ]+$/g, "");
+  return `${stem || "页面"}.${extension}`;
+}
 
 function default_parsers() {
   return [{ id: "larkenterprise", domain: "larkenterprise.com", parser: "feishu" }];
@@ -20,7 +27,7 @@ function default_parsers() {
 
 // 在页面上下文中执行：克隆 document，移除 script 标签；命中飞书解析时额外提取文件、图片、视频，
 // 并把对应节点替换为 {{IMAGE:1}} / {{VIDEO:1}} / {{FILE:1}} 占位符。
-function read_page_html(rules) {
+function read_page_html(rules, replace_assets = true) {
   const file_extension = /\.(pdf|doc|docx|xls|xlsx|ppt|pptx|zip|rar|7z|csv|txt|md|json|mp3|m4a|wav|flac|apk|dmg|sketch|fig|psd|ai|eps|epub|srt|vtt|gz|tgz|tar)$/i;
   const video_extension = /\.(mp4|webm|mov|m4v|m3u8|flv|avi|mkv)$/i;
   const feishu_host = /(^|\.)(feishu\.cn|feishu-doc\.cn|larksuite\.com|larkoffice\.com)$/i;
@@ -138,7 +145,7 @@ function read_page_html(rules) {
   replace_canvases(root);
 
   const parser = resolve_parser(location.hostname, rules);
-  const feishu = parser === "feishu";
+  const feishu = parser === "feishu" && replace_assets;
   const images = [];
   const videos = [];
   const files = [];
@@ -222,6 +229,8 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
   const manifest = client.runtime.getManifest();
   const cookies_ = ref([]);
   const selected_ = ref(new Set());
+  const cookie_page_ = ref(1);
+  const cookie_page_count_ = computed(cookies_, (cookies) => Math.max(1, Math.ceil(cookies.length / COOKIE_PAGE_SIZE)));
   const profiles_ = ref([default_settings()]);
   const saved_profiles_ = ref([]);
   const active_profile_ = ref("default");
@@ -229,10 +238,13 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
   const settings_ = combine({ profiles: profiles_, active: active_profile_ }, ({ profiles, active }) => profiles.find((profile) => profile.id === active) || profiles[0]);
   const status_ = combine({ statuses: statuses_, active: active_profile_ }, ({ statuses, active }) => ({ syncing: false, message: "尚未同步 Cookie", ...statuses[active] }));
   const url_ = ref("");
+  const tab_title_ = ref("");
   // 变更检测规则与 Cookie 同步共用同一套 hostname 解析（仅 http(s) 有效，见 detection.model.js）。
   const page_domain_ = computed(url_, hostname_of);
   const message_ = ref("");
   const cookie_feedback_ = ref("");
+  const cookie_error_ = ref("");
+  const sync_profiles_open_ = ref(false);
   const copied_domain_ = ref("");
   const loading_ = ref(false);
   const busy_ = ref(true);
@@ -245,12 +257,20 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
   const page_files_ = ref([]);
   const page_parser_ = ref("generic");
   const page_parsers_ = ref([]);
-  const settings_menu_ = ref("cookie-sync");
+  const settings_menu_ = ref("savepage");
   const parsers_message_ = ref("");
   let hydrating_parsers = false;
   const savepage_feedback_ = ref("");
   const savepage_copied_ = ref(false);
   const savepage_loading_ = ref(false);
+  const page_saving_ = ref(false);
+  const download_name_ = ref("");
+  const download_status_ = ref("idle");
+  const download_message_ = ref("");
+  const download_warnings_ = ref([]);
+  const screenshot_saving_ = ref(false);
+  const download_available_ = computed(page_domain_, (domain) => Boolean(domain));
+  const download_default_filename_ = combine({ title: tab_title_, domain: page_domain_ }, (s) => page_filename(s.title || s.domain || "页面"));
   const comparison_records_ = ref([]);
   const comparison_group_ = ref(default_comparison_group);
   const comparison_group_names_ = ref([default_comparison_group]);
@@ -282,11 +302,18 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
     return current ? current.records : [];
   });
   let page_transition_timer;
+  let page_load_timer;
   let copy_feedback_timer;
   let savepage_copy_timer;
   let clip_copy_timer;
   let navigated = false;
+  let settings_navigated = false;
+  let hydrating_profile = true;
   let hydrating_domains = false;
+  let initialized = false;
+  let disposed = false;
+  let cookies_requested = false;
+  let page_requested = false;
   const profile_buttons = new Map();
   const domain_buttons = new Map();
   const group_buttons = new Map();
@@ -294,17 +321,40 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
   const rule_buttons = new Map();
   const clip_buttons = new Map();
   const selected_cookies_ = combine({ cookies: cookies_, selected: selected_ }, ({ cookies, selected }) => cookies.filter((_, index) => selected.has(index)));
+  const add_to_sync_disabled_ = combine({ loading: loading_, busy: busy_, domain: page_domain_, profiles: profiles_ }, (s) => s.loading || s.busy || !s.domain || !s.profiles.length);
+
+  async function load_tab() {
+    const [tab] = await client.tabs.query({ active: true, currentWindow: true });
+    if (tab?.url !== url_.value && !page_saving_.value) {
+      download_name_.as("");
+      download_status_.as("idle");
+      download_message_.as("");
+      download_warnings_.as([]);
+    }
+    url_.as(tab?.url || "");
+    tab_title_.as(tab?.title || "");
+    return tab;
+  }
+
+  function load_page_later() {
+    clearTimeout(page_load_timer);
+    if (!initialized || disposed) return;
+    // 等面板和页面切换动画显示完，再处理当前页需要的数据。
+    page_load_timer = setTimeout(() => {
+      if (page_.value === "cookie" && !cookies_requested) refresh();
+      if (page_.value === "savepage" && !page_requested) refresh_page();
+    }, 200);
+  }
 
   async function refresh() {
     if (loading_.value) return;
+    cookies_requested = true;
     loading_.as(true);
     cookie_feedback_.as("");
     url_.as("");
-    cookies_.as([]);
-    selected_.as(new Set());
+    cookie_page_.as(1);
     try {
-      const [tab] = await client.tabs.query({ active: true, currentWindow: true });
-      url_.as(tab?.url || "");
+      const tab = await load_tab();
       if (!/^https?:\/\//i.test(url_.value)) throw new Error("当前页面不支持读取 Cookie");
       const stores = await client.cookies.getAllCookieStores();
       const store = stores.find((item) => item.tabIds.includes(tab.id));
@@ -312,8 +362,11 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
       cookies.sort((a, b) => a.name.localeCompare(b.name) || a.domain.localeCompare(b.domain) || a.path.localeCompare(b.path));
       cookies_.as(cookies);
       selected_.as(new Set(cookies.map((_, index) => index)));
+      cookie_error_.as("");
     } catch (error) {
-      cookie_feedback_.as(error.message);
+      cookie_error_.as(error.message);
+      cookies_.as([]);
+      selected_.as(new Set());
     } finally {
       loading_.as(false);
     }
@@ -453,16 +506,16 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
     }
   }
 
-  async function refresh_page() {
+  async function refresh_page({ preserve_assets = false } = {}) {
     if (savepage_loading_.value) return;
+    page_requested = true;
     savepage_loading_.as(true);
     savepage_feedback_.as("");
     try {
-      const [tab] = await client.tabs.query({ active: true, currentWindow: true });
-      if (tab?.url) url_.as(tab.url);
+      const tab = await load_tab();
       if (!tab?.id) throw new Error("未获取到当前标签页");
       if (!/^https?:\/\//i.test(tab.url || "")) throw new Error("当前页面不支持读取内容");
-      const injected = await client.scripting.executeScript({ target: { tabId: tab.id }, func: read_page_html, args: [page_parsers_.value] });
+      const injected = await client.scripting.executeScript({ target: { tabId: tab.id }, func: read_page_html, args: [page_parsers_.value, !preserve_assets] });
       const result = injected?.[0]?.result;
       if (!result || typeof result.html !== "string" || !result.html) throw new Error("未获取到页面内容");
       page_html_.as(result.html);
@@ -485,7 +538,7 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
   }
 
   async function send(action, value) {
-    const settings = ["save", "sync"].includes(action) ? validate_settings(settings_.value) : value;
+    const settings = ["save", "sync"].includes(action) ? validate_settings(value || settings_.value) : value;
     const response = await client.runtime.sendMessage({ action, settings });
     if (!response?.success) throw new Error(response?.error || "扩展后台未响应");
     saved_profiles_.as(response.profiles);
@@ -494,7 +547,8 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
     } else {
       const profiles = profiles_.value.filter((profile) => action !== "remove" || profile.id !== value.id)
         .map((profile) => ["save", "sync"].includes(action) && profile.id === settings.id
-          ? response.profiles.find((item) => item.id === profile.id) : profile);
+          ? response.profiles.find((item) => item.id === profile.id)
+          : action === "add-domain" && profile.id === value.id ? add_profile_domain(profile, value.domain) : profile);
       for (const profile of response.profiles) {
         if (!profiles.some((item) => item.id === profile.id)) profiles.push(profile);
       }
@@ -508,11 +562,86 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
     if (area === "local" && changes[status_key]?.newValue) statuses_.as(changes[status_key].newValue);
   }
 
+  function can_remove_profile(id) {
+    return profiles_.value.length > 1 && (saved_profiles_.value.length > 1 || !saved_profiles_.value.some((profile) => profile.id === id));
+  }
+
   const methods = {
+    async download_page(format = "html") {
+      if (page_saving_.value || savepage_loading_.value || busy_.value) return;
+      const screenshot = format === "png";
+      page_saving_.as(true);
+      screenshot_saving_.as(screenshot);
+      download_status_.as("reading");
+      download_message_.as(screenshot ? "正在截取当前可见区域。" : "正在冻结页面样式并打包资源，请保持面板打开。");
+      download_warnings_.as([]);
+      let download_url;
+      try {
+        const tab = await load_tab();
+        if (!tab?.id) throw new Error("未获取到当前标签页");
+        if (!/^https?:\/\//i.test(tab.url || "")) throw new Error("当前页面不支持读取内容");
+        let blob;
+        if (screenshot) {
+          if (!client.tabs.captureVisibleTab) throw new Error("当前浏览器不支持截图");
+          const image = await client.tabs.captureVisibleTab(tab.windowId, { format: "png" });
+          if (!image?.startsWith("data:image/png")) throw new Error("未获取到截图");
+          blob = await (await fetch(image)).blob();
+        } else {
+          const [injected] = await client.scripting.executeScript({ target: { tabId: tab.id }, func: capture_snapshot });
+          const snapshot = injected?.result;
+          if (injected?.error || !snapshot?.html) throw new Error(injected?.error || "未获取到页面快照");
+          tab_title_.as(snapshot.title || tab_title_.value);
+          download_warnings_.as(snapshot.warnings || []);
+          blob = new Blob([snapshot.html], { type: "text/html;charset=utf-8" });
+        }
+        const filename = page_filename(download_name_.value.trim() || tab_title_.value || hostname_of(url_.value) || "页面", screenshot ? "png" : "html");
+        download_status_.as("sending");
+        download_message_.as(`正在准备 ${filename}`);
+        download_url = URL.createObjectURL(blob);
+        if (client.downloads?.download) {
+          await client.downloads.download({ url: download_url, filename });
+        } else {
+          const link = document.createElement("a");
+          link.setAttribute("data-n", "page-download-link");
+          link.href = download_url;
+          link.download = filename;
+          document.body.append(link);
+          link.click();
+          link.remove();
+        }
+        savepage_feedback_.as(`已开始下载：${filename}`);
+        download_message_.as(filename);
+        download_status_.as("success");
+      } catch (error) {
+        savepage_feedback_.as(`保存页面失败：${error.message}`);
+        download_message_.as(error.message);
+        download_status_.as("error");
+      } finally {
+        if (download_url) setTimeout(() => URL.revokeObjectURL(download_url), 1000);
+        screenshot_saving_.as(false);
+        page_saving_.as(false);
+      }
+    },
+    async add_to_sync_profile(id) {
+      const domain = page_domain_.value;
+      const profile = profiles_.value.find((item) => item.id === id);
+      if (busy_.value || loading_.value || !domain || !profile) return;
+      busy_.as(true);
+      try {
+        if (saved_profiles_.value.some((item) => item.id === id)) await send("add-domain", { id, domain });
+        else await send("save", add_profile_domain(profile, domain));
+        cookie_feedback_.as(`已将 ${domain} 添加到「${profile.name || "未命名"}」`);
+        ui.sync_profiles$.hide();
+      } catch (error) {
+        cookie_feedback_.as(`添加到同步配置失败：${error.message}`);
+      } finally {
+        busy_.as(false);
+      }
+    },
     add_domain() {
       if (busy_.value) return;
-      methods.update("domainFilter.domains", [...settings_.value.domainFilter.domains, { enabled: true, domain: "" }]);
-      const input = ui.domains$.fields.at(-1).field.fields.domain.input;
+      methods.update("domainFilter.domains", [{ enabled: true, domain: "" }, ...settings_.value.domainFilter.domains]);
+      const input = ui.domains$.fields[0].field.fields.domain.input;
       queueMicrotask(() => input.focus());
     },
     remove_domain(index) {
@@ -534,9 +663,9 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
       active_profile_.as(profile.id);
       message_.as("新配置尚未保存");
     },
-    async remove_profile() {
-      if (busy_.value || !state.can_remove.value) return;
-      const profile = settings_.value;
+    async remove_profile(id = active_profile_.value) {
+      const profile = profiles_.value.find((item) => item.id === id);
+      if (busy_.value || !profile || !can_remove_profile(id)) return;
       if (!confirm_remove(`删除同步配置「${profile.name || "未命名"}」？`)) return;
       busy_.as(true);
       try {
@@ -544,7 +673,7 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
           await send("remove", { id: profile.id });
         } else {
           profiles_.as(profiles_.value.filter((item) => item.id !== profile.id));
-          active_profile_.as(profiles_.value[0].id);
+          if (active_profile_.value === id) active_profile_.as(profiles_.value[0].id);
         }
         profile_buttons.delete(profile.id);
         message_.as("配置已删除");
@@ -555,32 +684,47 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
       }
     },
     navigate(page) {
-      if (!["cookie", "settings", "savepage", "clip", "detect"].includes(page) || page === page_.value) return;
+      if (!Object.hasOwn(PAGE_TITLES, page) || page === page_.value) return;
       navigated = true;
+      ui.sync_profiles$.hide();
       clearTimeout(page_transition_timer);
       leaving_page_.as(page_.value);
       page_.as(page);
       client.storage.local.set({ "popup-page": page }).catch((error) => message_.as(`保存页面位置失败：${error.message}`));
       page_transition_timer = setTimeout(() => leaving_page_.as(""), 180);
+      load_page_later();
     },
     async ready() {
       client.storage.onChanged.addListener(on_storage_changed);
-      await Promise.all([
-        client.storage.local.get("popup-page").then((saved) => {
-          if (!navigated && ["cookie", "settings", "savepage", "clip", "detect"].includes(saved["popup-page"])) page_.as(saved["popup-page"]);
-        }).catch((error) => message_.as(error.message)),
+      const [saved] = await Promise.all([
+        client.storage.local.get(["popup-page", "settings-menu", "cookie-sync-profile"]).catch((error) => {
+          message_.as(error.message);
+          return {};
+        }),
         load_parsers(),
         load_comparisons(),
         load_clips(),
         load_detection_rules(),
-        refresh(),
+        load_tab().catch((error) => cookie_error_.as(error.message)),
         send("get").catch((error) => message_.as(error.message)),
       ]);
-      await refresh_page(); // 需要等解析规则加载完再抓取
+      let saved_page = saved["popup-page"] === "settings" && saved["settings-menu"] === "cookie-sync" ? "cookie-sync" : saved["popup-page"];
+      if (["savepage", "clip", "detect"].includes(saved_page)) saved_page = "save-page";
+      if (!navigated && Object.hasOwn(PAGE_TITLES, saved_page)) page_.as(saved_page);
+      if (saved["settings-menu"] === "cookie-sync") {
+        await client.storage.local.set({ "popup-page": page_.value, "settings-menu": "savepage" }).catch((error) => message_.as(`迁移同步页面位置失败：${error.message}`));
+      }
+      if (!settings_navigated && ["savepage", "about"].includes(saved["settings-menu"])) settings_menu_.as(saved["settings-menu"]);
+      if (profiles_.value.some((profile) => profile.id === saved["cookie-sync-profile"])) active_profile_.as(saved["cookie-sync-profile"]);
+      hydrating_profile = false;
       busy_.as(false);
+      initialized = true;
+      load_page_later();
     },
     dispose() {
+      disposed = true;
       clearTimeout(page_transition_timer);
+      clearTimeout(page_load_timer);
       clearTimeout(copy_feedback_timer);
       clearTimeout(savepage_copy_timer);
       clearTimeout(clip_copy_timer);
@@ -605,6 +749,9 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
     select_all(checked) {
       selected_.as(new Set(checked ? cookies_.value.map((_, index) => index) : []));
     },
+    select_cookie_page(page) {
+      if (Number.isInteger(page) && page >= 1 && page <= cookie_page_count_.value) cookie_page_.as(page);
+    },
     async copy_domain(domain = page_domain_.value) {
       if (!domain || loading_.value) return;
       clearTimeout(copy_feedback_timer);
@@ -619,6 +766,7 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
       }
     },
     async copy(all = false) {
+      if (loading_.value) return;
       const cookies = all ? cookies_.value : selected_cookies_.value;
       if (!cookies.length) return cookie_feedback_.as("没有可复制的 Cookie");
       try {
@@ -629,8 +777,10 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
       }
     },
     select_settings_menu(name) {
-      if (!["cookie-sync", "savepage"].includes(name) || name === settings_menu_.value) return;
+      if (!["savepage", "about"].includes(name) || name === settings_menu_.value) return;
+      settings_navigated = true;
       settings_menu_.as(name);
+      client.storage.local.set({ "settings-menu": name }).catch((error) => message_.as(`保存设置菜单位置失败：${error.message}`));
     },
     add_parser() {
       if (busy_.value) return;
@@ -901,24 +1051,35 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
 
   const state = {
       profiles: profiles_, saved_profiles: saved_profiles_, active_profile: active_profile_, statuses: statuses_,
-      cookie_feedback: cookie_feedback_, copied_domain: copied_domain_,
-      page_domain_copied: combine({ copied: copied_domain_, domain: page_domain_ }, (s) => Boolean(s.domain) && s.copied === s.domain),
+      cookie_feedback: cookie_feedback_, cookie_error: cookie_error_, copied_domain: copied_domain_,
+      sync_profiles_open: sync_profiles_open_,
+      domain_count: computed(settings_, (settings) => settings.domainFilter.domains.length),
       profile_titles: combine({ profiles: profiles_, saved: saved_profiles_ }, ({ profiles, saved }) => Object.fromEntries(profiles.map((profile) => [profile.id,
         `${profile.name || "未命名"}${JSON.stringify(profile) !== JSON.stringify(saved.find((item) => item.id === profile.id)) ? " *" : ""}`,
       ]))),
-      can_remove: combine({ profiles: profiles_, saved: saved_profiles_, active: active_profile_ }, (s) => s.profiles.length > 1 && (s.saved.length > 1 || !s.saved.some((profile) => profile.id === s.active))),
       page: page_,
       leaving_page: leaving_page_,
       title: computed(page_, (page) => PAGE_TITLES[page] || "Cookie"),
+      app_name: ref(manifest.name || "Download & Manage"),
       version: ref(manifest.version_name || `v${manifest.version}`),
       cookies: cookies_, selected: selected_, settings: settings_, status: status_,
       url: url_, page_domain: page_domain_, message: message_, loading: loading_, busy: busy_,
       selected_count: computed(selected_cookies_, (items) => items.length),
       all_selected: combine({ cookies: cookies_, selected: selected_cookies_ }, ({ cookies, selected }) => cookies.length > 0 && cookies.length === selected.length),
       sync_busy: combine({ busy: busy_, statuses: statuses_ }, ({ busy, statuses }) => busy || Object.values(statuses).some((status) => status.syncing)),
-      rows: computed(cookies_, (cookies) => cookies.map((cookie, index) => ({ ...cookie, index }))),
-      table_status: computed(cookies_, (cookies) => cookies.length ? "normal" : "empty"),
-      sync_message: computed(status_, (status) => status.message + (status.lastSuccessAt ? ` · 最近成功 ${new Date(status.lastSuccessAt).toLocaleString()}` : "")),
+      cookie_page: cookie_page_, cookie_page_count: cookie_page_count_, cookie_page_size: COOKIE_PAGE_SIZE,
+      rows: combine({ cookies: cookies_, page: cookie_page_, current: page_, leaving: leaving_page_ }, ({ cookies, page, current, leaving }) => {
+        const start = (page - 1) * COOKIE_PAGE_SIZE;
+        return current === "cookie" || leaving === "cookie" ? cookies.slice(start, start + COOKIE_PAGE_SIZE).map((cookie, index) => ({ ...cookie, index: start + index })) : [];
+      }),
+      table_status: combine({ cookies: cookies_, error: cookie_error_ }, (s) => s.error ? "error" : s.cookies.length ? "normal" : "empty"),
+      sync_message: computed(status_, (status) => {
+        const date = new Date(status.lastSuccessAt);
+        if (!status.lastSuccessAt || !Number.isFinite(date.getTime())) return status.message;
+        const pad = (value) => String(value).padStart(2, "0");
+        const time = `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+        return `${status.message} · 最近成功 ${time}`;
+      }),
       encrypted: computed(settings_, (settings) => settings.encryption.method !== "none"),
       page_html: page_html_,
       page_parser: page_parser_,
@@ -933,6 +1094,21 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
       savepage_feedback: savepage_feedback_,
       savepage_copied: savepage_copied_,
       savepage_loading: savepage_loading_,
+      page_saving: page_saving_,
+      download_title: combine({ title: tab_title_, domain: page_domain_ }, (s) => s.title || s.domain || "未获取到可保存的页面"),
+      download_available: download_available_,
+      download_status: download_status_,
+      download_warnings: download_warnings_, screenshot_saving: screenshot_saving_,
+      download_status_label: combine({ busy: busy_, available: download_available_, status: download_status_, screenshot: screenshot_saving_ }, (s) => {
+        if (s.busy) return "正在获取页面信息";
+        if (!s.available) return "当前页面无法保存";
+        return { idle: "准备保存", reading: s.screenshot ? "正在截取可见区域" : "正在打包页面", sending: "正在开始下载", success: "已开始下载", error: "保存失败" }[s.status];
+      }),
+      download_message: combine({ busy: busy_, available: download_available_, message: download_message_ }, (s) => {
+        if (s.busy) return "请稍候…";
+        if (!s.available) return "请切换到普通网页后重试。";
+        return s.message || "点击保存，下载当前页面的 HTML 文件。";
+      }),
       comparison_records: comparison_records_,
       comparison_groups: comparison_groups_,
       comparison_group: comparison_group_,
@@ -971,7 +1147,20 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
       return domain_buttons.get(domain);
     },
     profile_button(id) {
-      if (!profile_buttons.has(id)) profile_buttons.set(id, new vm.ButtonCore({ variant: "ghost", size: "sm", onClick: () => methods.select_profile(id) }));
+      if (!profile_buttons.has(id)) {
+        const tab = new vm.ButtonCore({ variant: "ghost", size: "sm", onClick: () => methods.select_profile(id) });
+        const remove = new vm.ButtonCore({ variant: "ghost", size: "icon-sm", onClick: () => methods.remove_profile(id) });
+        const add_domain = new vm.ButtonCore({ variant: "ghost", size: "sm", onClick: () => methods.add_to_sync_profile(id) });
+        const disabled = combine({ busy: busy_, profiles: profiles_, saved: saved_profiles_ }, () => busy_.value || !can_remove_profile(id));
+        const update = () => {
+          disabled.value ? remove.disable() : remove.enable();
+          add_to_sync_disabled_.value ? add_domain.disable() : add_domain.enable();
+        };
+        disabled.subscribe({ onChange: update });
+        add_to_sync_disabled_.subscribe({ onChange: update });
+        update();
+        profile_buttons.set(id, { tab, remove, add_domain });
+      }
       return profile_buttons.get(id);
     },
     group_button(name) {
@@ -1045,23 +1234,34 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
       },
     }),
     settings_menu: [
-      { name: "cookie-sync", title: "Cookie 同步" },
-      { name: "savepage", title: "SavePage 解析" },
+      { name: "savepage", title: "保存页面" },
+      { name: "about", title: "关于" },
     ].map((item) => ({ ...item, button$: new vm.ButtonCore({ variant: "ghost", size: "sm", onClick: () => methods.select_settings_menu(item.name) }) })),
     add_parser$: new vm.ButtonCore({ variant: "outline", size: "sm", onClick: methods.add_parser }),
     add_domain$: new vm.ButtonCore({ variant: "outline", size: "sm", onClick: methods.add_domain }),
     add_profile$: new vm.ButtonCore({ variant: "outline", size: "sm", onClick: methods.add_profile }),
     add_group$: new vm.ButtonCore({ variant: "outline", size: "sm", onClick: methods.add_group }),
-    remove_profile$: new vm.ButtonCore({ variant: "ghost", size: "sm", onClick: methods.remove_profile }),
     menu: [
       { name: "cookie", title: "Cookie", icon: "file-lock" },
-      { name: "savepage", title: "对比", icon: "file-code" },
-      { name: "clip", title: "剪藏", icon: "scroll-text" },
-      { name: "detect", title: "变更检测", icon: "radio-tower" },
+      { name: "cookie-sync", title: "Cookie 同步", icon: "refresh-cw" },
+      { name: "save-page", title: "保存页面", icon: "download" },
       { name: "settings", title: "设置", icon: "settings" },
     ].map((item) => ({ ...item, button$: new vm.ButtonCore({ variant: "ghost", onClick: () => methods.navigate(item.name) }) })),
     refresh$: new vm.ButtonCore({ variant: "outline", size: "sm", onClick: refresh }),
     refresh_page$: new vm.ButtonCore({ variant: "outline", size: "sm", onClick: refresh_page }),
+    download_page$: new vm.ButtonCore({ variant: "primary", onClick: methods.download_page }),
+    download_screenshot$: new vm.ButtonCore({ variant: "outline", onClick: () => methods.download_page("png") }),
+    download_name$: createInputStore({
+      value: computed(download_name_, (value) => value), allowClear: false,
+      disabled: combine({ busy: busy_, saving: page_saving_, available: download_available_ }, (s) => s.busy || s.saving || !s.available),
+      onEnter: methods.download_page,
+      onChange(value) {
+        if (page_saving_.value || value === download_name_.value) return;
+        download_name_.as(value);
+        download_status_.as("idle");
+        download_message_.as("");
+      },
+    }),
     stage_page$: new vm.ButtonCore({ variant: "outline", size: "sm", onClick: methods.stage_page }),
     copy_page$: new vm.ButtonCore({ variant: "outline", size: "sm", onClick: methods.copy_page }),
     clear_comparisons$: new vm.ButtonCore({ variant: "ghost", size: "sm", onClick: methods.clear_comparisons }),
@@ -1071,7 +1271,8 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
     clip_important$: createCheckboxStore({ checked: computed(clip_options_, (options) => options.important), onChange: (value) => methods.set_clip_option("important", value) }),
     clip_inline_images$: createCheckboxStore({ checked: computed(clip_options_, (options) => options.inline_images), onChange: (value) => methods.set_clip_option("inline_images", value) }),
     clip_pseudo$: createCheckboxStore({ checked: computed(clip_options_, (options) => options.materialize_pseudo), onChange: (value) => methods.set_clip_option("materialize_pseudo", value) }),
-    copy_domain$: new vm.ButtonCore({ variant: "outline", size: "sm", onClick: () => methods.copy_domain() }),
+    add_to_sync$: new vm.ButtonCore({ variant: "outline", size: "sm", onClick: () => ui.sync_profiles$.toggle() }),
+    sync_profiles$: new vm.PopoverCore({ side: "bottom", align: "end", offsetY: 6 }),
     copy_all$: new vm.ButtonCore({ variant: "outline", size: "sm", onClick: () => methods.copy(true) }),
     copy_selected$: new vm.ButtonCore({ variant: "primary", size: "sm", onClick: () => methods.copy() }),
     save$: new vm.ButtonCore({ variant: "outline", size: "sm", onClick: () => methods.save() }),
@@ -1102,6 +1303,14 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
       onChange: (value) => methods.update(field, value),
     });
   }
+  ui.sync_profiles$.onShow(() => sync_profiles_open_.as(true));
+  ui.sync_profiles$.onHide(() => sync_profiles_open_.as(false));
+  ui.download_name$.setPlaceholder(download_default_filename_.value);
+  download_default_filename_.subscribe({ onChange: (value) => ui.download_name$.setPlaceholder(value) });
+  active_profile_.subscribe({ onChange(id) {
+    if (hydrating_profile) return;
+    client.storage.local.set({ "cookie-sync-profile": id }).catch((error) => message_.as(`保存配置选择失败：${error.message}`));
+  } });
   page_parsers_.subscribe({ onChange(list) {
     const rows = list.map((item) => ({ domain: item.domain, parser: item.parser }));
     const current = ui.parsers$.value || [];
@@ -1128,12 +1337,13 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
     [computed(state.comparison_ready, (ready) => !ready), ui.start_comparison$],
     [combine({ loading: clip_loading_, available: state.clip_available }, (s) => s.loading || !s.available), ui.start_clip$],
     [computed(clip_records_, (records) => !records.length), ui.clear_clips$],
-    [combine({ loading: loading_, domain: page_domain_ }, (s) => s.loading || !s.domain), ui.copy_domain$],
-    [computed(cookies_, (cookies) => !cookies.length), ui.copy_all$],
-    [computed(state.selected_count, (count) => !count), ui.copy_selected$],
+    [add_to_sync_disabled_, ui.add_to_sync$],
+    [combine({ cookies: cookies_, loading: loading_ }, (s) => s.loading || !s.cookies.length), ui.copy_all$],
+    [combine({ count: state.selected_count, loading: loading_ }, (s) => s.loading || !s.count), ui.copy_selected$],
+    [combine({ busy: busy_, saving: page_saving_, loading: savepage_loading_, available: download_available_ }, (s) => s.busy || s.saving || s.loading || !s.available), ui.download_page$],
+    [combine({ busy: busy_, saving: page_saving_, available: download_available_ }, (s) => s.busy || s.saving || !s.available), ui.download_screenshot$],
     [state.sync_busy, ui.save$], [state.sync_busy, ui.sync$],
     [busy_, ui.add_profile$], [busy_, ui.add_domain$], [busy_, ui.add_parser$],
-    [combine({ busy: busy_, can: state.can_remove }, (s) => s.busy || !s.can), ui.remove_profile$],
   ]) {
     const update = (disabled) => disabled ? button.disable() : button.enable();
     update(source.value);

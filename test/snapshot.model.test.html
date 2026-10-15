@@ -1,0 +1,105 @@
+<!doctype html><html lang="zh-CN" data-n="test-document"><head data-n="test-head"><meta charset="utf-8" data-n="test-charset">
+<title data-n="test-title">中文所见快照 😀</title>
+<style data-n="test-styles">
+body { margin: 16px; background: #f1ede4; color: #432719; font: 15px/1.5 Arial, sans-serif; }
+#styled { width: 360px; padding: 12px; border: 3px solid #397; background: url('./snapshot-resource.svg') no-repeat right top #fcf8ef; }
+#styled::before { content: "注入样式："; color: #c34; font-weight: 700; }
+.hidden { display:none; }
+</style></head><body data-n="test-body">
+<div id="styled" data-n="styled">中文内容 😀 <span id="nested" data-n="nested">保留插件修改后的颜色</span></div>
+<a id="internal-link" href="#styled" data-n="internal-link">页内跳转</a>
+<img id="picture" data-n="picture" width="32" height="24" src="./snapshot-resource.svg">
+<canvas id="drawing" data-n="drawing" width="48" height="24"></canvas>
+<input id="field" data-n="field" value="旧值"><input id="secret" data-n="secret" type="password" value="private-password">
+<div id="shadow-host" data-n="shadow-host"></div><div class="hidden" data-n="hidden">不可见内容</div>
+<svg width="20" height="20" data-n="svg"><defs data-n="defs"><linearGradient id="paint" data-n="paint"><stop offset="0" stop-color="red" data-n="stop"/></linearGradient></defs><rect id="painted" width="20" height="20" fill="url(#paint)" data-n="painted"><animate attributeName="opacity" from="1" to="1" dur="1s" data-n="animation"/></rect></svg>
+<script type="module" data-n="test-script">
+window.addEventListener("error", event => document.body.setAttribute("data-test-error", event.error?.stack || event.message));
+window.addEventListener("unhandledrejection", event => document.body.setAttribute("data-test-error", String(event.reason?.stack || event.reason)));
+const { capture_snapshot, fetch_snapshot_resource } = await import("../src/save/snapshot.model.js");
+function assert(value, message) { if (!value) throw new Error(message); }
+const calls = [];
+globalThis.chrome = { runtime: { sendMessage: async message => {
+  calls.push(message);
+  try { return { success: true, ...await fetch_snapshot_resource(message.url) }; }
+  catch (error) { return { success: false, error: error.message }; }
+} } };
+const injected = new CSSStyleSheet();
+injected.replaceSync("#nested { color:rgb(21, 94, 173)!important; font-size:19px!important; }");
+document.adoptedStyleSheets = [injected];
+const shadow = document.querySelector("#shadow-host").attachShadow({ mode:"open" });
+shadow.innerHTML = '<style data-n="shadow-style">p{color:rgb(71,28,123);font-size:17px}</style><p id="shadow-text" data-n="shadow-text">Shadow DOM 内容</p>';
+document.querySelector("#field").value = "当前输入的内容";
+const canvas = document.querySelector("#drawing");
+canvas.getContext("2d").fillStyle = "#e63";
+canvas.getContext("2d").fillRect(0,0,48,24);
+await Promise.all([...document.images].map(image => image.decode()));
+const before = document.body.innerHTML;
+const capture = (0, eval)(`(${capture_snapshot.toString()})`);
+const snapshot = await capture();
+assert(document.body.innerHTML === before, "保存不能修改原始页面");
+assert(snapshot.html.includes('charset="utf-8"') && snapshot.html.includes("中文内容 😀"), "快照必须声明 UTF-8 并保留中文和表情");
+assert(!snapshot.html.includes("<script") && !snapshot.html.includes("private-password"), "快照不能携带脚本或密码值");
+assert(snapshot.warnings.length === 0, `正常资源不应产生警告：${snapshot.warnings.join("；")}`);
+assert(calls.filter(call => call.url.endsWith("snapshot-resource.svg")).length === 1, "图片和背景应复用同一个资源请求");
+assert(calls.every(call => call.action === "snapshot-resource"), "资源必须通过扩展后台读取");
+const parsed = new DOMParser().parseFromString(snapshot.html, "text/html");
+assert(parsed.querySelector("#picture").src.startsWith("data:image/svg+xml"), "图片应内嵌为 data URL");
+assert(parsed.querySelector("#drawing").tagName === "IMG" && parsed.querySelector("#drawing").src.startsWith("data:image/png"), "Canvas 应保留当前画面");
+assert(parsed.querySelector("#field").value === "当前输入的内容", "表单应保存当前值");
+assert(parsed.querySelector("#internal-link").getAttribute("href") === "#styled" && !parsed.querySelector("animate"), "页内链接应保留，SVG 动画应冻结为静态画面");
+assert(parsed.querySelector('template[shadowrootmode="open"]'), "开放 Shadow DOM 应保存为声明式 Shadow DOM");
+const frame = document.createElement("iframe");
+frame.setAttribute("data-n", "snapshot-preview");
+frame.style.cssText = `width:${innerWidth}px;height:500px;border:0`;
+const loaded = new Promise(resolve => frame.onload = resolve);
+frame.srcdoc = snapshot.html;
+document.body.append(frame);
+await loaded;
+const saved_doc = frame.contentDocument;
+const saved_view = frame.contentWindow;
+for (const selector of ["#styled", "#nested", "#picture"]) {
+  const live = document.querySelector(selector), saved = saved_doc.querySelector(selector);
+  const original = getComputedStyle(live), frozen = saved_view.getComputedStyle(saved);
+  for (const key of ["color", "backgroundColor", "fontSize", "paddingLeft", "borderLeftWidth"]) assert(original[key] === frozen[key], `${selector} 的 ${key} 应与当前页面一致`);
+  assert(Math.abs(live.getBoundingClientRect().width - saved.getBoundingClientRect().width) < 1, `${selector} 的宽度应保持一致`);
+}
+assert(saved_doc.querySelector("#shadow-host").shadowRoot?.querySelector("#shadow-text"), "声明式 Shadow DOM 应能直接打开");
+assert(saved_view.getComputedStyle(saved_doc.querySelector("#shadow-host").shadowRoot.querySelector("#shadow-text")).color === "rgb(71, 28, 123)", "Shadow DOM 样式应保留");
+assert(saved_doc.querySelector('[data-n="snapshot-before"]').textContent === "注入样式：", "伪元素应实体化");
+assert(saved_view.getComputedStyle(saved_doc.querySelector('[data-n="hidden"]')).display === "none", "隐藏内容不能在归档后闪现");
+assert(saved_doc.querySelector("#painted") && !snapshot.html.includes('url("http'), "SVG 内部引用不能变成外链");
+frame.remove();
+
+// 字体样式也必须内嵌资源；这里只检查归档，不依赖测试系统已安装的字体。
+const font_sheet = new CSSStyleSheet();
+font_sheet.replaceSync('@font-face{font-family:SnapshotFixture;src:url("./snapshot-resource.svg")} #nested{font-family:SnapshotFixture,Arial,sans-serif}');
+document.adoptedStyleSheets = [injected, font_sheet];
+const with_font = await capture();
+assert(with_font.html.includes("@font-face") && /src:\s*url\("data:image\/svg\+xml/.test(with_font.html), "字体 URL 应打包为 data URL");
+document.adoptedStyleSheets = [injected];
+// CSS 内容里的闭合 style 字符不能逃逸成 HTML 标签。
+document.querySelector("#nested").style.content = JSON.stringify("</sty" + "le><scr" + "ipt>alert(1)</scr" + "ipt>");
+const escaped = await capture();
+assert(!new DOMParser().parseFromString(escaped.html, "text/html").querySelector("script"), "CSS 序列化不能生成脚本标签");
+document.querySelector("#nested").style.removeProperty("content");
+
+// 资源失败必须显式反馈，同时保持静态内容可用。
+chrome.runtime.sendMessage = async () => ({ success:false, error:"资源不可用" });
+const failed = await capture();
+assert(failed.stats.failed === 1 && failed.warnings.some(text => text.includes("未能打包")), "资源失败应统计并提示");
+assert(!new DOMParser().parseFromString(failed.html, "text/html").querySelector("#picture").hasAttribute("src"), "失败图片不能留下在线依赖");
+
+// 后台资源读取只允许 HTTP(S)，并拒绝错误响应及超限内容。
+for (const url of ["file:///etc/hosts", "chrome-extension://other/private", "https://user:pass@example.com/"]) {
+  let requested = false, rejected = false;
+  try { await fetch_snapshot_resource(url, async () => { requested = true; }); } catch { rejected = true; }
+  assert(rejected && !requested, "非法资源地址必须在网络请求前拒绝");
+}
+for (const response of [new Response("", {status:403}), new Response("x", {headers:{"content-length":String(9*1024*1024)}}), new Response(new Uint8Array(8*1024*1024+1))]) {
+  let rejected = false;
+  try { await fetch_snapshot_resource("https://example.com/file", async () => response); } catch { rejected = true; }
+  assert(rejected, "错误状态和资源超限必须拒绝");
+}
+document.body.setAttribute("data-test-passed", "");
+</script></body></html>

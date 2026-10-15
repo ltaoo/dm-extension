@@ -1,6 +1,6 @@
-import { Button, IconButton, Table } from "../../assets/vendor/src/dmui.js";
+import { Button, IconButton, Popover, Table } from "../../assets/vendor/src/dmui.js";
 
-const { View, Icon, Show, computed, combine } = window.Timeless;
+const { View, Icon, Show, For, computed, combine } = window.Timeless;
 
 function CopyIcon(copied, name) {
   return Show({
@@ -12,6 +12,7 @@ function CopyIcon(copied, name) {
 
 export default function CookiePageView({ store }) {
   const { state, ui } = store;
+  const dismiss_picker = (event) => { if (event.key === "Escape") ui.sync_profiles$.hide(); };
   return View({
     class: computed(state.page, (page) => `cookie-page popup-page ${page === "cookie" ? "page-enter" : "page-exit"}`),
     attributes: {
@@ -21,28 +22,43 @@ export default function CookiePageView({ store }) {
       "aria-hidden": computed(state.page, (page) => page !== "cookie" ? "true" : undefined),
     },
   }, [
-    View({ class: "cookie-toolbar", attributes: { n: "cookies-toolbar" } }, [
-      View({ class: "cookie-site", attributes: { n: "cookie-site" } }, [
-        View({ class: "section-title", attributes: { n: "cookies-heading", role: "heading", "aria-level": "2" } }, ["当前页面 Cookie"]),
-        View({ class: "cookie-url", attributes: { n: "page-url", title: state.url } }, [computed(state.url, (url) => url || "未获取到当前页面")]),
-      ]),
-      Button({
-        store: ui.copy_domain$,
-        class: computed(state.page_domain_copied, (copied) => copied ? "domain-copy is-copied" : "domain-copy"),
-        prefix: CopyIcon(state.page_domain_copied, "page-domain-copy"),
-        attributes: { n: "copy-domain-button", title: computed(state.page_domain_copied, (copied) => copied ? "已复制" : "复制域名"), "aria-label": computed(state.page_domain_copied, (copied) => copied ? "域名已复制" : "复制域名") },
-      }, ["复制域名"]),
-      Button({ store: ui.refresh$, attributes: { n: "refresh-button" } }, [computed(state.loading, (loading) => loading ? "读取中…" : "刷新")]),
-    ]),
     View({ class: "cookie-actions", attributes: { n: "cookie-actions" } }, [
       View({ class: "muted", attributes: { n: "cookie-count" } }, [computed(state.cookies, (cookies) => `共 ${cookies.length} 项 Cookie`)]),
+      Popover({
+        store: ui.sync_profiles$, class: "sync-profile-picker",
+        onKeyDown: dismiss_picker,
+        attributes: { n: "sync-profile-picker", role: "dialog", "aria-label": "选择同步配置" },
+        content: [Show({
+          when: state.sync_profiles_open,
+          ok: () => For({
+            each: state.profiles, key: "id",
+            render: (profile) => Button({
+              store: ui.profile_button(profile.id).add_domain, class: "sync-profile-option",
+              attributes: { n: "sync-profile-option", "data-profile-id": profile.id },
+            }, [computed(state.profile_titles, (titles) => titles[profile.id])]),
+          }),
+        })],
+      }),
+      Button({
+        store: ui.add_to_sync$,
+        onKeyDown: dismiss_picker,
+        attributes: { n: "add-to-sync-button", "aria-haspopup": "dialog", "aria-expanded": computed(state.sync_profiles_open, String) },
+        onMounted({ target }) {
+          ui.sync_profiles$.popper.setReference({ $el: target, getRect: () => target.getBoundingClientRect() }, { force: true });
+        },
+      }, ["添加到同步配置"]),
       Button({ store: ui.copy_all$, attributes: { n: "copy-all-button" } }, ["复制全部"]),
       Button({ store: ui.copy_selected$, attributes: { n: "copy-selected-button" } }, [computed(state.selected_count, (count) => `复制已选（${count}）`)]),
     ]),
     View({ class: "cookie-feedback", attributes: { n: "cookie-feedback", role: "status", hidden: computed(state.cookie_feedback, (message) => !message ? true : undefined) } }, [state.cookie_feedback]),
     Table({
       name: "cookies", rows: state.rows, rowKey: "index", rowSelection: ui.row_selection,
+      pagination: {
+        page: state.cookie_page, pageCount: state.cookie_page_count, pageSize: state.cookie_page_size,
+        visible: computed(state.cookie_page_count, (count) => count > 1), onChange: store.methods.select_cookie_page,
+      },
       status: state.table_status, loading: state.loading,
+      error: state.cookie_error, errorTitle: "无法读取 Cookie",
       emptyTitle: "当前页面没有可用的 Cookie", emptyDescription: "打开普通网页后点击刷新。",
       containerClass: "cookie-table",
       columns: [
@@ -63,6 +79,5 @@ export default function CookiePageView({ store }) {
         { name: "attributes", title: "属性", width: 72, render: (cookie) => [cookie.secure && "Secure", cookie.httpOnly && "HttpOnly", cookie.session && "Session"].filter(Boolean).join(" · ") || "—" },
       ],
     }),
-    View({ class: "page-help", attributes: { n: "cookie-help" } }, ["勾选仅影响复制。同步范围请在设置中配置。"]),
   ]);
 }

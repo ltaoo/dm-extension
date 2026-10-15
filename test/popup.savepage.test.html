@@ -60,6 +60,10 @@
 window.addEventListener("error", (event) => document.body.setAttribute("data-test-error", event.message));
 window.addEventListener("unhandledrejection", (event) => document.body.setAttribute("data-test-error", String((event.reason && event.reason.message) || event.reason)));
 await import("../src/popup/popup.js");
+const { cookie$ } = await import("../src/models/store.js");
+for (let attempts = 0; cookie$.state.busy.value && attempts < 120; attempts += 1) await new Promise((resolve) => requestAnimationFrame(resolve));
+cookie$.methods.navigate("savepage");
+
 
 await new Promise((resolve) => {
   const started = Date.now();

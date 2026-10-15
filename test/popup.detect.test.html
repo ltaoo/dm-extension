@@ -71,6 +71,10 @@
 window.addEventListener("error", (event) => document.body.setAttribute("data-test-error", event.message));
 window.addEventListener("unhandledrejection", (event) => document.body.setAttribute("data-test-error", String((event.reason && event.reason.message) || event.reason)));
 await import("../src/popup/popup.js");
+const { cookie$ } = await import("../src/models/store.js");
+for (let attempts = 0; cookie$.state.busy.value && attempts < 120; attempts += 1) await new Promise((resolve) => requestAnimationFrame(resolve));
+cookie$.methods.navigate("detect");
+
 
 const row_of = (name) => Array.from(document.querySelectorAll(".detection-rule-row"))
   .find((row) => row.querySelector(".detection-rule-name").textContent.trim() === name);
@@ -92,8 +96,8 @@ await new Promise((resolve) => {
 
 // —— 菜单与标题 ——
 const menu_labels = Array.from(document.querySelectorAll(".popup-menu-button")).map((button) => button.textContent.trim());
-if (!menu_labels.includes("变更检测")) throw new Error(`菜单应含「变更检测」，实际 ${menu_labels.join("、")}`);
-if (!document.querySelector('[n="menu-detect"]')) throw new Error("菜单应有变更检测按钮");
+if (menu_labels.includes("变更检测")) throw new Error("变更检测入口应隐藏");
+if (document.querySelector('[n="menu-detect"]')) throw new Error("变更检测按钮应隐藏");
 const heading = document.querySelector(".popup-title");
 if (!heading || heading.textContent.trim() !== "变更检测") throw new Error(`标题应为「变更检测」：${heading && heading.textContent}`);
 const detect_page = document.querySelector("#detect-page");

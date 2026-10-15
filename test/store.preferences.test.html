@@ -1,0 +1,455 @@
+<!doctype html><html data-n="test-document"><head data-n="test-head"><meta charset="utf-8"></head><body data-n="test-body"><script type="module" data-n="test-script">
+window.addEventListener("error", (event) => document.body.setAttribute("data-test-error", event.message));
+window.addEventListener("unhandledrejection", (event) => document.body.setAttribute("data-test-error", String(event.reason?.message || event.reason)));
+globalThis.chrome = { runtime: { getManifest: () => ({ version: "0.0.0" }) } };
+const { CookieViewModel } = await import("../src/models/store.js");
+const { add_profile_domain, CookieSyncModel, default_settings, settings_key } = await import("../src/models/sync.model.js");
+
+function assert(condition, message) {
+  if (!condition) throw new Error(message);
+}
+
+function create_client(data = {}) {
+  const client = {
+    data,
+    cookie_reads: 0, page_reads: 0,
+    statuses: {}, actions: [],
+    downloads: { download: async () => 1 },
+    profiles: [default_settings("first", "配置一"), default_settings("second", "配置二")],
+    runtime: {
+      getManifest: () => ({ version: "0.0.0" }),
+      async sendMessage({ action, settings }) {
+        client.actions.push(action);
+        if (action === "get") await client.before_profiles?.();
+        if (action === "remove" && client.fail_remove) throw new Error("remove failed");
+        if (action === "add-domain" && client.fail_add) throw new Error("save failed");
+        if (action === "save") client.profiles = [...client.profiles.filter((profile) => profile.id !== settings.id), settings];
+        if (action === "remove") client.profiles = client.profiles.filter((profile) => profile.id !== settings.id);
+        if (action === "add-domain") client.profiles = client.profiles.map((profile) => profile.id === settings.id ? add_profile_domain(profile, settings.domain) : profile);
+        return structuredClone({ success: true, profiles: client.profiles, statuses: client.statuses });
+      },
+    },
+    storage: {
+      local: {
+        async get(keys) {
+          const wanted = Array.isArray(keys) ? keys : [keys];
+          if (wanted.includes("popup-page")) await client.before_preferences?.();
+          return structuredClone(Object.fromEntries(wanted.map((key) => [key, data[key]])));
+        },
+        async set(items) {
+          if (client.fail_writes) throw new Error("storage denied");
+          Object.assign(data, structuredClone(items));
+        },
+      },
+      onChanged: { addListener() {}, removeListener() {} },
+    },
+    tabs: { query: async () => [{ id: 1, url: "https://example.com/" }] },
+    cookies: { getAllCookieStores: async () => [{ id: "0", tabIds: [1] }], getAll: async () => { client.cookie_reads += 1; return []; } },
+    scripting: { executeScript: async () => { client.page_reads += 1; return [{ result: { html: "<html><body>内容</body></html>" } }]; } },
+  };
+  return client;
+}
+
+const open = async (client, confirm_remove = () => true) => {
+  const store = CookieViewModel(client, { writeText: async () => {} }, confirm_remove);
+  await store.methods.ready();
+  return store;
+};
+
+// 切换后重新创建 Model，恢复同步页面和配置；无需保存配置内容。
+{
+  const client = create_client();
+  const store = await open(client);
+  assert(store.state.settings_menu.value === "savepage", "设置页应默认显示 SavePage 解析");
+  assert(store.state.active_profile.value === "first", "首次打开应选中第一项配置");
+  store.methods.navigate("cookie-sync");
+  store.methods.select_profile("second");
+  assert(client.data["popup-page"] === "cookie-sync", "同步入口应立即记住页面位置");
+  assert(client.data["cookie-sync-profile"] === "second", "配置选择应立即写入存储");
+  store.methods.dispose();
+  const reopened = await open(client);
+  assert(reopened.state.page.value === "cookie-sync", "应恢复 Cookie 同步页面");
+  assert(reopened.state.settings_menu.value === "savepage", "应恢复设置子菜单");
+  assert(reopened.state.active_profile.value === "second", "应恢复配置选择");
+  assert(reopened.state.settings.value.id === "second", "配置表单应对应恢复的选中项");
+  reopened.methods.navigate("settings");
+  reopened.methods.dispose();
+  const again = await open(client);
+  assert(again.state.page.value === "settings" && again.state.settings_menu.value === "savepage", "切回设置应恢复解析配置");
+  again.methods.dispose();
+}
+
+// 关于菜单应记住选择，重新打开后恢复。
+{
+  const client = create_client();
+  const store = await open(client);
+  store.methods.navigate("settings");
+  store.methods.select_settings_menu("about");
+  assert(client.data["settings-menu"] === "about", "关于菜单应立即保存选择");
+  store.methods.dispose();
+  const reopened = await open(client);
+  assert(reopened.state.page.value === "settings" && reopened.state.settings_menu.value === "about", "重新打开应恢复关于页面");
+  reopened.methods.select_settings_menu("unknown");
+  assert(reopened.state.settings_menu.value === "about" && client.data["settings-menu"] === "about", "非法菜单不能改动关于选择");
+  reopened.methods.select_settings_menu("savepage");
+  assert(client.data["settings-menu"] === "savepage", "切回解析配置也应保存选择");
+  reopened.methods.dispose();
+}
+
+// 初始化期间切换到关于，不能被旧偏好覆盖。
+{
+  const client = create_client({ "settings-menu": "savepage" });
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  client.before_preferences = () => gate;
+  const store = CookieViewModel(client, { writeText: async () => {} });
+  const pending = store.methods.ready();
+  store.methods.select_settings_menu("about");
+  release();
+  await pending;
+  assert(store.state.settings_menu.value === "about", "旧偏好不能覆盖用户选择的关于菜单");
+  store.methods.dispose();
+}
+
+// 配置列表和偏好读取无论哪个先完成，都应恢复选中的第二项。
+for (const delayed of ["before_preferences", "before_profiles"]) {
+  const client = create_client({ "settings-menu": "savepage", "cookie-sync-profile": "second" });
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  client[delayed] = () => gate;
+  const pending = open(client);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  release();
+  const store = await pending;
+  assert(store.state.settings_menu.value === "savepage", "异步加载应恢复设置菜单");
+  assert(store.state.active_profile.value === "second", "异步加载应恢复配置选择");
+  store.methods.dispose();
+}
+
+// 无效或已删除的选择回退到默认值，非法选择不写入。
+{
+  const client = create_client({ "settings-menu": "unknown", "cookie-sync-profile": "deleted" });
+  const store = await open(client);
+  assert(store.state.settings_menu.value === "savepage", "无效菜单应回退到 SavePage 解析");
+  assert(store.state.active_profile.value === "first", "已删除配置应回退到第一项");
+  store.methods.select_settings_menu("unknown");
+  store.methods.select_profile("deleted");
+  assert(store.state.settings_menu.value === "savepage" && store.state.active_profile.value === "first", "非法选择不应改变状态");
+  store.methods.dispose();
+}
+
+// 新增并保存的配置也应记忆；删除后记住回退的配置。
+{
+  const client = create_client();
+  const store = await open(client);
+  store.methods.add_profile();
+  const id = store.state.active_profile.value;
+  assert(client.data["cookie-sync-profile"] === id, "新增配置应记住当前选择");
+  await store.methods.save();
+  store.methods.dispose();
+  const reopened = await open(client);
+  assert(reopened.state.active_profile.value === id, "已保存的新配置应恢复选中");
+  await reopened.methods.remove_profile();
+  assert(client.data["cookie-sync-profile"] === "first", "删除当前配置应保存回退选择");
+  reopened.methods.dispose();
+  const again = await open(client);
+  assert(again.state.active_profile.value === "first", "删除后重新打开应选中回退配置");
+  again.methods.dispose();
+}
+
+// 按 ID 删除非当前配置：取消不修改，确认后保留当前配置及未保存编辑。
+{
+  const client = create_client();
+  const confirmations = [];
+  let confirmed = false;
+  const store = await open(client, (message) => { confirmations.push(message); return confirmed; });
+  store.methods.select_profile("second");
+  store.methods.update("name", "正在编辑");
+  await store.methods.remove_profile("first");
+  assert(confirmations[0].includes("配置一"), "确认弹窗应显示被删除的配置名称");
+  assert(client.profiles.length === 2 && store.state.profiles.value.length === 2, "取消删除不能改动配置");
+  assert(store.state.active_profile.value === "second", "取消删除不能切换当前配置");
+  confirmed = true;
+  await store.methods.remove_profile("first");
+  assert(client.profiles.length === 1 && client.profiles[0].id === "second", "确认后应删除指定的已保存配置");
+  assert(store.state.active_profile.value === "second" && store.state.settings.value.name === "正在编辑", "删除其他配置不能丢失当前编辑");
+  store.methods.add_profile();
+  const draft = store.state.active_profile.value;
+  store.methods.select_profile("second");
+  await store.methods.remove_profile(draft);
+  assert(store.state.profiles.value.length === 1 && store.state.active_profile.value === "second", "删除非当前草稿应保留当前配置");
+  const count = confirmations.length;
+  await store.methods.remove_profile("second");
+  await store.methods.remove_profile("missing");
+  assert(confirmations.length === count && store.state.profiles.value.length === 1, "最后一个已保存配置和无效 ID 不应触发删除");
+  store.methods.dispose();
+}
+
+// 删除失败时保留配置和当前选择，并显示错误。
+{
+  const client = create_client();
+  client.fail_remove = true;
+  const store = await open(client);
+  store.methods.select_profile("second");
+  await store.methods.remove_profile("first");
+  assert(store.state.profiles.value.length === 2 && store.state.active_profile.value === "second", "删除失败不能改动配置或选择");
+  assert(store.state.message.value === "remove failed" && !store.state.busy.value, "删除失败应反馈错误并恢复可操作状态");
+  store.methods.dispose();
+}
+
+// 原设置页的同步位置迁移到独立入口，原解析位置保持在设置页。
+for (const menu of ["cookie-sync", "savepage"]) {
+  const client = create_client({ "popup-page": "settings", "settings-menu": menu, "cookie-sync-profile": "second" });
+  const store = await open(client);
+  assert(store.state.page.value === (menu === "cookie-sync" ? "cookie-sync" : "settings"), "应正确迁移旧设置位置");
+  assert(store.state.active_profile.value === "second", "迁移不能丢失配置选择");
+  store.methods.dispose();
+  const reopened = await open(client);
+  assert(reopened.state.page.value === (menu === "cookie-sync" ? "cookie-sync" : "settings"), "迁移后重新打开应保留页面位置");
+  reopened.methods.navigate("settings");
+  reopened.methods.dispose();
+  const settings = await open(client);
+  assert(settings.state.page.value === "settings", "迁移后切回设置不能再次跳回同步页");
+  settings.methods.dispose();
+}
+
+// 初始化期间的用户页面选择优先；存储写入失败时保留本次选择并反馈错误。
+{
+  const client = create_client({ "popup-page": "settings", "settings-menu": "cookie-sync" });
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  client.before_preferences = () => gate;
+  const store = CookieViewModel(client, { writeText: async () => {} });
+  const pending = store.methods.ready();
+  store.methods.navigate("savepage");
+  release();
+  await pending;
+  assert(store.state.page.value === "savepage", "迁移旧偏好不能覆盖用户的新选择");
+  client.fail_writes = true;
+  store.methods.navigate("cookie-sync");
+  await Promise.resolve();
+  assert(store.state.message.value.includes("保存页面位置失败"), "菜单写入失败应反馈错误");
+  store.methods.select_profile("second");
+  await Promise.resolve();
+  assert(store.state.active_profile.value === "second", "写入失败也应保留本次配置选择");
+  assert(store.state.message.value.includes("保存配置选择失败"), "配置写入失败应反馈错误");
+  store.methods.dispose();
+}
+
+// 添加当前域名到指定配置，保存域名变动并保留其他未保存编辑及当前选择。
+{
+  const client = create_client();
+  client.profiles[1].domainFilter.domains = [{ enabled: false, domain: "https://EXAMPLE.com/path" }];
+  const store = await open(client);
+  store.methods.select_profile("second");
+  store.methods.update("name", "未保存的名称");
+  store.methods.update("endpoint", "未保存的接口");
+  store.methods.select_profile("first");
+  await store.methods.add_to_sync_profile("second");
+  const saved = client.profiles.find((profile) => profile.id === "second");
+  const draft = store.state.profiles.value.find((profile) => profile.id === "second");
+  assert(saved.domainFilter.domains.length === 1 && saved.domainFilter.domains[0].enabled, "已有的禁用域名应启用且不能重复插入");
+  assert(saved.name === "配置二" && saved.endpoint !== draft.endpoint, "添加域名不能顺带保存其他编辑");
+  assert(draft.name === "未保存的名称" && draft.endpoint === "未保存的接口", "添加域名不能丢弃未保存编辑");
+  assert(store.state.active_profile.value === "first", "添加到其他配置不能改变当前选择");
+  await store.methods.add_to_sync_profile("second");
+  assert(client.profiles.find((profile) => profile.id === "second").domainFilter.domains.length === 1, "重复添加应保持幂等");
+  store.methods.add_profile();
+  const id = store.state.active_profile.value;
+  store.methods.select_profile("first");
+  await store.methods.add_to_sync_profile(id);
+  assert(client.profiles.some((profile) => profile.id === id && profile.domainFilter.domains[0].domain === "example.com"), "未保存的新配置应能添加域名并保存");
+  client.fail_add = true;
+  const before = JSON.stringify(store.state.profiles.value);
+  await store.methods.add_to_sync_profile("first");
+  assert(JSON.stringify(store.state.profiles.value) === before && !store.state.busy.value, "保存失败不能改动配置且应恢复可操作状态");
+  assert(store.state.cookie_feedback.value.includes("save failed"), "保存失败应反馈错误");
+  const count = client.actions.length;
+  await store.methods.add_to_sync_profile("missing");
+  client.tabs.query = async () => [{ id: 1, url: "about:blank" }];
+  await store.methods.refresh();
+  await store.methods.add_to_sync_profile("first");
+  assert(client.actions.length === count, "无效配置和不支持的页面不能写入同步配置");
+  store.methods.dispose();
+}
+
+// 后台串行添加域名：持久化到指定配置，既有字段保持原样。
+{
+  const data = { [settings_key]: { profiles: [default_settings("first", "配置一"), default_settings("second", "配置二")] } };
+  const client = {
+    storage: { local: { get: async () => structuredClone(data), set: async (items) => Object.assign(data, structuredClone(items)) } },
+    alarms: { getAll: async () => [], clear: async () => {}, create: async () => {} },
+  };
+  const model = CookieSyncModel(client, async () => { throw new Error("添加域名不应发起同步请求"); });
+  await model.ready;
+  await Promise.all([model.run("add-domain", { id: "second", domain: "example.com" }), model.run("add-domain", { id: "second", domain: "other.com" })]);
+  const saved = data[settings_key].profiles;
+  assert(saved[0].domainFilter.domains[0].domain === "", "后台不能改动未选中的配置");
+  assert(saved[1].domainFilter.domains.slice(0, 2).map((row) => row.domain).join("|") === "other.com|example.com", "并发添加不能覆盖彼此的域名");
+  const before = JSON.stringify(saved);
+  for (const value of [{ id: "missing", domain: "example.com" }, { id: "second", domain: "*" }]) {
+    let rejected = false;
+    try { await model.run("add-domain", value); } catch { rejected = true; }
+    assert(rejected && JSON.stringify(data[settings_key].profiles) === before, "无效添加请求应拒绝且不能写入");
+  }
+}
+
+// 最近成功时间以本地 YYYY-MM-DD HH:mm 显示，非法时间不展示。
+for (const time of [new Date(2026, 9, 15, 9, 5).toISOString(), "invalid"]) {
+  const client = create_client();
+  client.statuses.first = { message: "同步完成", lastSuccessAt: time };
+  const store = await open(client);
+  assert(store.state.sync_message.value === (time === "invalid" ? "同步完成" : "同步完成 · 最近成功 2026-10-15 09:05"), "同步时间格式应固定且不含秒数");
+  store.methods.dispose();
+}
+
+// 隐藏功能的旧位置恢复到保存页面，进入时不自动解析。
+for (const page of ["savepage", "clip", "detect"]) {
+  const client = create_client({ "popup-page": page });
+  const store = await open(client);
+  assert(store.state.page.value === "save-page" && client.page_reads === 0, "旧位置应恢复到保存页面且不自动解析");
+  store.methods.dispose();
+}
+
+// 保存页面调用所见快照获取器；下载失败时可修改文件名重试。
+{
+  const client = create_client({ "popup-page": "save-page" });
+  const downloads = [];
+  const args_seen = [];
+  client.scripting.executeScript = async ({ func }) => {
+    args_seen.push(func.name);
+    return [{ result: { title: "报告/页面:副本?", html: '<!doctype html><html><head><meta charset="utf-8"><title>报告</title></head><body><img src="data:image/png;base64,iVBORw0KGgo="><p>内容</p></body></html>', warnings: ["一个测试资源未能打包"] } }];
+  };
+  client.downloads.download = async (options) => { downloads.push({ ...options, html: await (await fetch(options.url)).text() }); return downloads.length; };
+  const store = await open(client);
+  await store.methods.download_page();
+  assert(downloads.length === 1 && downloads[0].filename === "报告_页面_副本_.html", "保存应下载 HTML 并清理文件名中的路径字符");
+  assert(store.state.download_status.value === "success" && store.state.download_message.value === downloads[0].filename, "下载开始后应显示成功阶段及实际文件名");
+  assert(args_seen[0] === "capture_snapshot", "保存页面必须使用所见快照引擎");
+  assert(downloads[0].html.includes('src="data:image/png;') && !downloads[0].html.includes("<script"), "下载应使用资源已打包的静态快照");
+  assert(store.state.download_warnings.value.length === 1, "资源缺失提示必须传给 View");
+  assert(new DOMParser().parseFromString(downloads[0].html, "text/html").head.firstElementChild.getAttribute("charset") === "utf-8", "下载文件必须显式声明 UTF-8，避免中文乱码");
+  client.downloads.download = async () => { throw new Error("download failed"); };
+  await store.methods.download_page();
+  assert(store.state.savepage_feedback.value.includes("download failed") && !store.state.page_saving.value, "下载失败应反馈错误并允许重试");
+  assert(store.state.download_status.value === "error" && store.state.download_message.value === "download failed", "保存页面应提供独立的失败状态与原因");
+  store.ui.download_name$.setValue("我的/页面.HTML");
+  assert(store.state.download_status.value === "idle", "修改文件名应清除旧状态");
+  client.downloads.download = async (options) => { downloads.push(options); return downloads.length; };
+  await store.methods.download_page();
+  assert(downloads.at(-1).filename === "我的_页面.html" && store.state.download_status.value === "success", "失败后应能修改文件名并重试");
+  store.ui.download_name$.setValue(store.ui.download_name$.value);
+  assert(store.state.download_status.value === "success", "重复上报相同文件名不能清除下载反馈");
+  client.tabs.query = async () => [{ id: 1, url: "about:blank" }];
+  const count = args_seen.length;
+  await store.methods.download_page();
+  assert(args_seen.length === count && store.state.savepage_feedback.value.includes("当前页面不支持读取内容"), "不支持的页面不能注入获取器或下载");
+  store.methods.dispose();
+}
+
+// 截图使用当前窗口的可见区域，不解析 HTML；沿用文件名和下载反馈。
+{
+  const client = create_client({ "popup-page": "save-page" });
+  const calls = [];
+  client.tabs.query = async () => [{ id: 1, windowId: 7, url: "https://example.com/", title: "截图页面" }];
+  client.tabs.captureVisibleTab = async (...args) => { calls.push(args); return "data:image/png;base64,iVBORw0KGgo="; };
+  client.downloads.download = async (options) => { calls.push(options); return 1; };
+  const store = await open(client);
+  store.ui.download_name$.setValue("截图.HTML");
+  await store.methods.download_page("png");
+  assert(calls[0][0] === 7 && calls[0][1].format === "png" && calls[1].filename === "截图.png", "截图应调用可见区域 API 并使用 PNG 扩展名");
+  assert(client.page_reads === 0 && store.state.download_status.value === "success" && !store.state.screenshot_saving.value, "截图不能触发 HTML 解析，完成后应恢复状态");
+  store.methods.dispose();
+}
+
+// 下载 API 不可用时，使用原生下载链接，完成后移除节点。
+{
+  const client = create_client({ "popup-page": "save-page" });
+  delete client.downloads;
+  const store = await open(client);
+  const clicked = [];
+  const native_click = HTMLAnchorElement.prototype.click;
+  HTMLAnchorElement.prototype.click = function () { clicked.push({ filename: this.download, url: this.href, connected: this.isConnected }); };
+  try {
+    await store.methods.download_page();
+    assert(clicked.length === 1 && clicked[0].filename === "example.com.html" && clicked[0].url.startsWith("blob:") && clicked[0].connected, "没有下载 API 时仍应触发 HTML 下载");
+    assert(!document.querySelector('[data-n="page-download-link"]') && store.state.savepage_feedback.value.includes("已开始下载"), "下载后应清理临时链接并显示反馈");
+  } finally {
+    HTMLAnchorElement.prototype.click = native_click;
+    store.methods.dispose();
+  }
+}
+
+// 重复点击只发起一次页面获取和下载。
+{
+  const client = create_client({ "popup-page": "save-page" });
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  let reads = 0;
+  let downloads = 0;
+  client.scripting.executeScript = async () => { reads += 1; await gate; return [{ result: { html: "<html><body>内容</body></html>" } }]; };
+  client.downloads.download = async () => { downloads += 1; return 1; };
+  const store = await open(client);
+  const pending = store.methods.download_page();
+  assert(store.state.download_status.value === "reading", "保存开始应立即进入读取阶段");
+  await store.methods.download_page();
+  release();
+  await pending;
+  assert(reads === 1 && downloads === 1, "保存中再次点击不能重复下载");
+  store.methods.dispose();
+}
+
+// 初始化只读取轻量标签页信息，耗时操作延后且仅加载当前页面。
+{
+  const client = create_client({ "popup-page": "settings" });
+  const store = await open(client);
+  assert(!store.state.busy.value && store.state.url.value === "https://example.com/", "未解析页面时也应能使用面板和当前标签页信息");
+  assert(client.cookie_reads === 0 && client.page_reads === 0, "初始化不能立即读取 Cookie 或解析整页");
+  const wait = () => new Promise((resolve) => setTimeout(resolve, 250));
+  await wait();
+  assert(client.cookie_reads === 0 && client.page_reads === 0, "设置页不应自动执行 Cookie 读取或整页解析");
+  store.methods.navigate("cookie");
+  assert(client.cookie_reads === 0, "切换 Cookie 页面时不能立即开始耗时工作");
+  await wait();
+  assert(client.cookie_reads === 1 && client.page_reads === 0, "Cookie 页应延后读取 Cookie，不能解析整页");
+  store.methods.navigate("savepage");
+  assert(client.page_reads === 0, "切换对比页时不能立即开始解析");
+  await wait();
+  assert(client.page_reads === 1, "对比页应延后解析页面");
+  store.methods.navigate("cookie");
+  await wait();
+  assert(client.cookie_reads === 1, "已加载页面再次切换不能重复自动读取");
+  store.methods.dispose();
+}
+
+// 用户手动刷新优先，取消或关闭弹窗后不再执行延后任务。
+{
+  const client = create_client();
+  const store = await open(client);
+  assert(client.cookie_reads === 0, "默认 Cookie 页也应延后读取");
+  await store.methods.refresh();
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  assert(client.cookie_reads === 1 && client.page_reads === 0, "手动刷新后不能再重复自动读取");
+  store.methods.navigate("savepage");
+  store.methods.navigate("settings");
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  assert(client.page_reads === 0, "快速离开对比页应取消尚未开始的解析");
+  store.methods.navigate("savepage");
+  store.methods.dispose();
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  assert(client.page_reads === 0, "关闭弹窗应取消待执行的解析");
+}
+
+{
+  const client = create_client();
+  const store = CookieViewModel(client, { writeText: async () => {} });
+  const pending = store.methods.ready();
+  store.methods.dispose();
+  await pending;
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  assert(client.cookie_reads === 0 && client.page_reads === 0, "初始化完成前关闭也不能执行延后任务");
+}
+
+document.body.setAttribute("data-test-passed", "");
+document.body.textContent = "store preferences checks passed";
+</script></body></html>

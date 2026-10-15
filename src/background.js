@@ -1,13 +1,21 @@
 import { alarm_name, CookieSyncModel } from "./models/sync.model.js";
 import { build_clip_record, extract_region, save_clips, verify_no_external_refs } from "./clip/clip.model.js";
+import { fetch_snapshot_resource } from "./save/snapshot.model.js";
 
 const sync$ = CookieSyncModel();
 sync$.ready.catch(console.error);
 
-const SYNC_ACTIONS = new Set(["get", "save", "sync", "remove"]);
+const SYNC_ACTIONS = new Set(["get", "save", "sync", "remove", "add-domain"]);
 
 chrome.runtime.onMessage.addListener((message, sender, respond) => {
   if (sender.id !== chrome.runtime.id) return;
+  if (message?.action === "snapshot-resource" && sender.tab?.id) {
+    fetch_snapshot_resource(message.url).then(
+      (result) => respond({ success: true, ...result }),
+      (error) => respond({ success: false, error: error.message }),
+    );
+    return true;
+  }
   if (message?.action === "clip-region") {
     clip_region(message, sender).then(
       (result) => respond({ success: true, ...result }),
