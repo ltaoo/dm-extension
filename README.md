@@ -63,7 +63,7 @@
 
 ### 加载扩展
 
-1. 克隆仓库，或下载源码并解压：
+1. 从 [Releases](https://github.com/ltaoo/dm-extension/releases) 下载 `dm-extension.zip` 并解压，或克隆仓库：
 
    ```sh
    git clone https://github.com/ltaoo/dm-extension.git
@@ -71,8 +71,17 @@
    ```
 
 2. 打开 `chrome://extensions`，开启「开发者模式」。
-3. 点击「加载已解压的扩展程序」，选择仓库根目录（包含 `manifest.json` 的目录）。
-4. 打开一个 HTTP(S) 页面，点击扩展图标即可使用。
+3. 点击「加载已解压的扩展程序」，选择解压目录或仓库根目录（包含 `manifest.json` 的目录）。
+
+   图中右上角的 **Developer mode** 对应「开发者模式」，左上角的 **Load unpacked** 对应「加载已解压的扩展程序」。
+
+   ![Chrome 扩展程序页面：开启右上角的开发者模式，点击左上角的加载已解压的扩展程序](assets/screenshots/chrome-load-unpacked.png)
+
+4. 打开一个 HTTP(S) 页面，点击浏览器右上角的拼图图标，在扩展列表中找到 **Download & Manage**，点击图钉将其固定到工具栏，再点击扩展图标即可使用。
+
+   ![Chrome 扩展菜单：点击扩展名称右侧的图钉，将扩展固定到工具栏](assets/screenshots/chrome-pin-extension.png)
+
+以上两张截图来自 Google 的 [Chrome 官方扩展入门教程](https://developer.chrome.com/docs/extensions/get-started/tutorial/hello-world?hl=zh-cn#load-unpacked)，按 [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) 许可使用，原图未修改。截图中的 **Hello Extensions** 是官方示例，安装本项目后显示的名称为 **Download & Manage**。
 
 不需要运行 `npm install` 或启动开发服务器。修改扩展代码后，在 `chrome://extensions` 中重新加载扩展，再重新打开弹窗或相关扩展页面。
 
@@ -161,6 +170,13 @@ python3 -m http.server 8791 --bind 127.0.0.1
 ### 更新版本与资源
 
 - 显示版本来自 [manifest.json](manifest.json) 的 `version_name`（当前 `1.0.0`），内部版本为 `version`（当前 `1.0.0`）；发布时同步修改两者。
+- 将版本修改与代码提交后，推送 tag 即可触发 [Release workflow](.github/workflows/release.yml)，自动打包并上传 `dm-extension.zip` 到对应的 GitHub Release；重复运行会更新同名附件。工作流不会自动修改扩展版本。例如发布 `1.0.0`：
+
+  ```sh
+  git tag v1.0.0
+  git push origin v1.0.0
+  ```
+
 - UI 资产已随仓库提供。`scripts/sync-ui-assets.sh` 依赖上级目录原主前端的 `src/` 与 `public/`，独立仓库无需执行。
 - `scripts/generate-icons.sh` 需要 `rsvg-convert` 与 ImageMagick，并会先将 **`../public/logo.svg` 覆盖复制到 `assets/icons/logo.svg`**，再导出 PNG / ICO。仅在上级源文件可用且确认覆盖符合预期时运行：
 

@@ -1,0 +1,35 @@
+name: Release extension
+
+on:
+  push:
+    tags:
+      - '**'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Package extension
+        run: |
+          git archive --format=zip --output="$RUNNER_TEMP/dm-extension.zip" HEAD \
+            manifest.json src assets/icons assets/vendor LICENSE
+          unzip -t "$RUNNER_TEMP/dm-extension.zip"
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "$RUNNER_TEMP/dm-extension.zip" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" "$RUNNER_TEMP/dm-extension.zip" \
+              --verify-tag --title "$GITHUB_REF_NAME" --generate-notes
+          fi
