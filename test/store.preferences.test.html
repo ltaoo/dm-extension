@@ -314,6 +314,7 @@ for (const page of ["savepage", "clip", "detect"]) {
 // 保存页面调用所见快照获取器；下载失败时可修改文件名重试。
 {
   const client = create_client({ "popup-page": "save-page" });
+  client.tabs.query = async () => [{ id: 1, url: "https://example.com/", title: "报告/页面:副本?" }];
   const downloads = [];
   const args_seen = [];
   client.scripting.executeScript = async ({ func }) => {
@@ -344,6 +345,38 @@ for (const page of ["savepage", "clip", "detect"]) {
   const count = args_seen.length;
   await store.methods.download_page();
   assert(args_seen.length === count && store.state.savepage_feedback.value.includes("当前页面不支持读取内容"), "不支持的页面不能注入获取器或下载");
+  store.methods.dispose();
+}
+
+// 文件名校验必须早于页面抓取和截图生成，失败后仍可修改并重试。
+for (const format of ["html", "png"]) {
+  const client = create_client({ "popup-page": "save-page" });
+  let title = "正常页面";
+  client.tabs.query = async () => [{ id: 1, url: "https://example.com/", title }];
+  let captures = 0;
+  const downloads = [];
+  client.tabs.captureVisibleTab = async () => { captures += 1; return "data:image/png;base64,iVBORw0KGgo="; };
+  client.scripting.executeScript = async () => {
+    captures += 1;
+    return [{ result: { title: ".抓取时变化的标题", html: "<html><body>内容</body></html>", svg: '<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"/>', width: 1, height: 1, pixel_ratio: 1 } }];
+  };
+  client.downloads.download = async (options) => { downloads.push(options); return 1; };
+  const store = await open(client);
+  for (const name of [".隐藏文件", "~临时文件", "CON", "nul.txt", "LPT1", "含\u200b隐藏字符", "含\u007f控制字符", "中".repeat(100)]) {
+    store.ui.download_name$.setValue(name);
+    await store.methods.download_page(format);
+    assert(captures === 0 && downloads.length === 0, `${format} 文件名无效时不能抓取、生成截图或下载：${name}`);
+    assert(store.state.download_status.value === "error" && store.state.download_message.value.includes("文件名"), "应立即提示文件名原因");
+    assert(!store.state.page_saving.value && !store.state.screenshot_saving.value && !store.ui.download_name$.disabled, "校验失败应恢复操作，允许修改文件名");
+  }
+  store.ui.download_name$.setValue("");
+  title = ".无效的默认标题";
+  await store.methods.download_page(format);
+  assert(captures === 0 && store.state.download_status.value === "error", "留空时也应在抓取前校验当前标签页标题");
+  title = "新的有效标题";
+  await store.methods.download_page(format);
+  assert(captures === 1 && downloads.length === 1 && downloads[0].filename === `新的有效标题.${format}`, "应使用抓取前确定的文件名，不能被快照标题覆盖");
+  assert(store.state.download_status.value === "success", `修正标题后 ${format} 应可重试成功`);
   store.methods.dispose();
 }
 

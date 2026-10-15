@@ -580,6 +580,11 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
         const tab = await load_tab();
         if (!tab?.id) throw new Error("未获取到当前标签页");
         if (!/^https?:\/\//i.test(tab.url || "")) throw new Error("当前页面不支持读取内容");
+        const filename = page_filename(download_name_.value.trim() || tab_title_.value || hostname_of(url_.value) || "页面", screenshot ? "png" : "html");
+        if (/^[.~]/.test(filename)) throw new Error("文件名不合法：不能以点或 ~ 开头，请修改文件名后重试");
+        if (/[\p{Cc}\p{Cf}\p{Cs}]/u.test(filename)) throw new Error("文件名不合法：包含不可见控制字符，请修改文件名后重试");
+        if (/^(?:con|prn|aux|nul|com[0-9¹²³]|lpt[0-9¹²³])(?:\.|$)/i.test(filename)) throw new Error("文件名不合法：不能使用系统保留名称，请修改文件名后重试");
+        if (new TextEncoder().encode(filename).length > 255) throw new Error("文件名过长：请缩短文件名后重试");
         let blob;
         if (screenshot) {
           if (!client.tabs.captureVisibleTab) throw new Error("当前浏览器不支持截图");
@@ -594,7 +599,6 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
           download_warnings_.as(snapshot.warnings || []);
           blob = new Blob([snapshot.html], { type: "text/html;charset=utf-8" });
         }
-        const filename = page_filename(download_name_.value.trim() || tab_title_.value || hostname_of(url_.value) || "页面", screenshot ? "png" : "html");
         download_status_.as("sending");
         download_message_.as(`正在准备 ${filename}`);
         download_url = URL.createObjectURL(blob);
