@@ -13,6 +13,7 @@ let cookie_reads = 0;
 let cookie_error = "";
 let cookie_records = [{ name: "session", value: "value", domain: ".example.com", path: "/" }];
 const copied = [];
+let clipboard_error = "";
 const sent_actions = [];
 const downloads = [];
 let page_reads = 0;
@@ -21,7 +22,7 @@ const native_confirm = window.confirm;
 const confirmations = [];
 let confirm_delete = false;
 window.confirm = (message) => { confirmations.push(message); return confirm_delete; };
-Object.defineProperty(navigator, "clipboard", { value: { writeText: async (text) => { copied.push(text); } } });
+Object.defineProperty(navigator, "clipboard", { value: { writeText: async (text) => { if (clipboard_error) throw new Error(clipboard_error); copied.push(text); } } });
 globalThis.chrome = {
   runtime: {
     getManifest: () => ({ name: "Download & Manage", version: "0.0.0", version_name: "v-test" }),
@@ -79,6 +80,7 @@ assert(header.contains(url) && url.textContent === tab_url, "页面地址应移�
 assert(url.parentElement === heading.parentElement, "页面地址应与 Cookie 标题相邻");
 assert(!node("cookies-heading") && !node("cookie-help"), "应移除重复标题和底部说明");
 assert(!node("copy-domain-button"), "应移除顶部复制域名按钮");
+assert(!node("cookie-feedback"), "Cookie 操作应使用全局 toast，不应渲染页内反馈节点");
 const buttons = ["add-to-sync-button", "copy-all-button", "copy-selected-button"].map(node);
 assert(buttons.every((button) => actions.contains(button)), "添加同步与两个复制按钮应在同一操作行");
 const top = buttons[0].getBoundingClientRect().top;
@@ -95,7 +97,7 @@ assert(node("sync-profile-option").textContent === "默认配置", "配置列表
 node("sync-profile-option").click();
 await tick();
 assert(sync_profiles[0].domainFilter.domains[0].domain === "*.example.com", "选中配置应保存当前站点主域名的通配规则");
-assert(cookie$.state.cookie_feedback.value.includes("添加到「默认配置」") && !cookie$.state.sync_profiles_open.value, "添加成功应反馈并关闭配置列表");
+assert(cookie$.state.message.value.includes("添加到「默认配置」") && !cookie$.state.sync_profiles_open.value, "添加成功应反馈并关闭配置列表");
 assert(cookie$.state.page.value === "cookie-sync" && cookie$.state.active_profile.value === "default", "添加成功应跳转至目标同步配置");
 assert(node("domain-input").value === "*.example.com" && !node("popup-toast").hidden && node("popup-toast").textContent.includes("*.example.com"), "目标配置应展示已保存的通配规则并通过 toast 反馈");
 assert(!node("settings-message"), "应移除 settings-message 节点");
@@ -110,13 +112,33 @@ await tick();
 node("sync-profile-option").click();
 await tick();
 assert(cookie$.state.page.value === "cookie" && !cookie$.state.sync_profiles_open.value, "重复添加应关闭配置列表并停留在 Cookie 页面");
-assert(node("cookie-feedback").textContent === "该配置已有相同域名" && !node("cookie-feedback").hidden, "重复添加应显示指定提示");
+assert(node("popup-toast").textContent === "该配置已有相同域名" && !node("popup-toast").hidden, "重复添加应通过 toast 显示指定提示");
 assert(sent_actions.length === actions_before_duplicate, "重复添加不能向后台重复写入");
 for (const [index, expected] of [[1, "session=value"], [2, "session=value"]]) {
   buttons[index].click();
   await tick();
   assert(copied.at(-1) === expected, "调整布局后复制行为应保持正常");
+  assert(!node("popup-toast").hidden && node("popup-toast").textContent === "已复制 1 项 Cookie", "复制全部或已选 Cookie 应通过 toast 反馈");
 }
+const toast = node("popup-toast");
+assert(getComputedStyle(toast).position === "absolute" && !node("cookie-page").contains(toast), "toast 应悬浮在页面上方，不占 Cookie 页内空间");
+const toast_rect = toast.getBoundingClientRect();
+const shell_rect = node("popup-shell").getBoundingClientRect();
+const main_rect = node("popup-main").getBoundingClientRect();
+assert(toast_rect.height > 0 && Math.abs(toast_rect.top - shell_rect.top - shell_rect.height * 0.28) < 1, "toast 应悬浮在面板高度约 28% 的位置");
+assert(Math.abs(toast_rect.left + toast_rect.width / 2 - main_rect.left - main_rect.width / 2) < 1, "toast 应在侧栏右侧的内容区水平居中");
+cookie$.methods.select_all(false);
+await cookie$.methods.copy();
+await tick();
+assert(!toast.hidden && toast.textContent === "没有可复制的 Cookie", "未选择 Cookie 应通过 toast 提示");
+cookie$.methods.select_all(true);
+clipboard_error = "剪贴板不可用";
+for (const copy of [() => cookie$.methods.copy(true), () => cookie$.methods.copy_domain("example.com")]) {
+  await copy();
+  await tick();
+  assert(!toast.hidden && toast.textContent === "复制失败：剪贴板不可用", "Cookie 或域名复制失败应通过 toast 提示");
+}
+clipboard_error = "";
 const reads_before = cookie_reads;
 refresh.click();
 await wait_for_cookies();
@@ -330,12 +352,12 @@ assert(url.textContent === "未获取到当前页面 Cookie", "无页面时应�
 assert(node("add-to-sync-button").disabled && node("copy-all-button").disabled, "未获取到页面时应禁用添加及复制按钮");
 assert(cookie$.state.table_status.value === "error" && node("cookies-error-message").textContent === "当前页面不支持读取 Cookie", "不支持的页面应在 Table Error 状态中显示原因");
 assert(node("download-page-button").disabled && node("download-filename-input").disabled && cookie$.state.download_status_label.value === "当前页面无法保存", "不支持的页面应禁用保存并说明原因");
-assert(node("cookie-feedback").hidden && !node("cookies-empty"), "读取失败不能在表格上方或空状态中重复显示");
+assert(node("popup-toast").hidden && !node("cookies-empty"), "读取失败不能在 toast 或空状态中重复显示");
 tab_url = "https://example.com/";
 cookie_error = "没有读取 Cookie 的权限";
 refresh.click();
 await wait_for_cookies();
-assert(node("cookies-error-message").textContent === cookie_error && node("cookie-feedback").hidden, "Cookie API 错误也应显示在表格内部");
+assert(node("cookies-error-message").textContent === cookie_error && node("popup-toast").hidden, "Cookie API 错误也应显示在表格内部");
 cookie_error = "";
 refresh.click();
 await wait_for_cookies();

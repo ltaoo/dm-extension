@@ -308,7 +308,7 @@ for (const menu of ["cookie-sync", "savepage"]) {
   const action_count = client.actions.length;
   await store.methods.add_to_sync_profile("second");
   assert(client.profiles.find((profile) => profile.id === "second").domainFilter.domains.length === 2 && client.actions.length === action_count, "重复添加不能修改或重新保存配置");
-  assert(store.state.page.value === "cookie" && store.state.active_profile.value === "first" && store.state.cookie_feedback.value === "该配置已有相同域名", "重复添加应留在原页、保持当前选择并显示提示");
+  assert(store.state.page.value === "cookie" && store.state.active_profile.value === "first" && store.state.message.value === "该配置已有相同域名", "重复添加应留在原页、保持当前选择并显示提示");
   store.methods.add_profile();
   const id = store.state.active_profile.value;
   store.methods.select_profile("first");
@@ -320,7 +320,7 @@ for (const menu of ["cookie-sync", "savepage"]) {
   const before = JSON.stringify(store.state.profiles.value);
   await store.methods.add_to_sync_profile("first");
   assert(JSON.stringify(store.state.profiles.value) === before && !store.state.busy.value, "保存失败不能改动配置且应恢复可操作状态");
-  assert(store.state.cookie_feedback.value.includes("save failed"), "保存失败应反馈错误");
+  assert(store.state.message.value.includes("save failed"), "保存失败应反馈错误");
   assert(store.state.page.value === "cookie" && store.state.active_profile.value === id, "保存失败应留在原页且不能改变当前配置选择");
   const count = client.actions.length;
   await store.methods.add_to_sync_profile("missing");
@@ -342,7 +342,7 @@ for (const domain of ["*.example.com", "example.com", "https://EXAMPLE.com/path"
     await store.methods.add_to_sync_profile("second");
     assert(JSON.stringify(store.state.profiles.value) === before && client.actions.length === action_count, "同域名重复添加不能修改规则或写入后台");
     assert(store.state.page.value === "cookie" && store.state.active_profile.value === "first" && !store.state.busy.value, "重复添加不能跳转或切换配置且应恢复可操作状态");
-    assert(store.state.cookie_feedback.value === "该配置已有相同域名", "重复添加应显示指定提示");
+    assert(store.state.message.value === "该配置已有相同域名", "重复添加应显示指定提示");
     store.methods.dispose();
   }
 }

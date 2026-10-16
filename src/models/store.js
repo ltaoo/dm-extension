@@ -243,7 +243,6 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
   // 变更检测规则与 Cookie 同步共用同一套 hostname 解析（仅 http(s) 有效，见 detection.model.js）。
   const page_domain_ = computed(url_, hostname_of);
   const message_ = ref("");
-  const cookie_feedback_ = ref("");
   const cookie_error_ = ref("");
   const sync_profiles_open_ = ref(false);
   const copied_domain_ = ref("");
@@ -352,7 +351,7 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
     if (loading_.value) return;
     cookies_requested = true;
     loading_.as(true);
-    cookie_feedback_.as("");
+    show_message("");
     url_.as("");
     cookie_page_.as(1);
     try {
@@ -644,21 +643,20 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
         const domain = sync_domain_rule(hostname);
         const normalized_domain = domain_rules(domain)[0];
         if (profile.domainFilter.domains.some((row) => domain_rules(row.domain).includes(normalized_domain))) {
-          cookie_feedback_.as("该配置已有相同域名");
+          show_message("该配置已有相同域名");
           ui.sync_profiles$.hide();
           return;
         }
         if (saved_profiles_.value.some((item) => item.id === id)) await send("add-domain", { id, domain });
         else await send("save", add_profile_domain(profile, domain));
-        cookie_feedback_.as(`已将 ${domain} 添加到「${profile.name || "未命名"}」`);
         ui.sync_profiles$.hide();
         active_profile_.as(id);
         methods.navigate("cookie-sync");
-        show_message(cookie_feedback_.value);
+        show_message(`已将 ${domain} 添加到「${profile.name || "未命名"}」`);
         const input = ui.domains$.fields[0].field.fields.domain.input;
         queueMicrotask(() => input.focus());
       } catch (error) {
-        cookie_feedback_.as(`添加到同步配置失败：${error.message}`);
+        show_message(`添加到同步配置失败：${error.message}`);
       } finally {
         busy_.as(false);
       }
@@ -800,22 +798,22 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
       copied_domain_.as("");
       try {
         await clipboard.writeText(domain);
-        cookie_feedback_.as("");
+        show_message("");
         copied_domain_.as(domain);
         copy_feedback_timer = setTimeout(() => copied_domain_.as(""), 3000);
       } catch (error) {
-        cookie_feedback_.as(`复制失败：${error.message}`);
+        show_message(`复制失败：${error.message}`);
       }
     },
     async copy(all = false) {
       if (loading_.value) return;
       const cookies = all ? cookies_.value : selected_cookies_.value;
-      if (!cookies.length) return cookie_feedback_.as("没有可复制的 Cookie");
+      if (!cookies.length) return show_message("没有可复制的 Cookie");
       try {
         await clipboard.writeText(cookies.map((cookie) => `${cookie.name}=${cookie.value}`).join("; "));
-        cookie_feedback_.as(`已复制 ${cookies.length} 项 Cookie`);
+        show_message(`已复制 ${cookies.length} 项 Cookie`);
       } catch (error) {
-        cookie_feedback_.as(`复制失败：${error.message}`);
+        show_message(`复制失败：${error.message}`);
       }
     },
     select_settings_menu(name) {
@@ -1093,7 +1091,7 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
 
   const state = {
       profiles: profiles_, saved_profiles: saved_profiles_, active_profile: active_profile_, statuses: statuses_,
-      cookie_feedback: cookie_feedback_, cookie_error: cookie_error_, copied_domain: copied_domain_,
+      cookie_error: cookie_error_, copied_domain: copied_domain_,
       sync_profiles_open: sync_profiles_open_,
       domain_count: computed(settings_, (settings) => settings.domainFilter.domains.length),
       profile_titles: combine({ profiles: profiles_, saved: saved_profiles_ }, ({ profiles, saved }) => Object.fromEntries(profiles.map((profile) => [profile.id,

@@ -1,11 +1,11 @@
-:root { color-scheme: light dark; font-family: var(--dm-font-family-sans); font-size: 13px; }
+:root { --popup-sidebar-width: 84px; color-scheme: light dark; font-family: var(--dm-font-family-sans); font-size: 13px; }
 * { box-sizing: border-box; }
 html, body, #root { width: 780px; height: 580px; margin: 0; overflow: hidden; }
 body { color: var(--dm-color-text-primary); background: var(--dm-color-bg-canvas); }
 [hidden] { display: none !important; }
-.popup-shell { display: flex; width: 100%; height: 100%; }
-.popup-toast { position: fixed; top: 16px; left: 50%; transform: translateX(-50%); z-index: 1100; width: max-content; max-width: calc(100vw - 32px); padding: 10px 16px; border: 1px solid var(--dm-color-border); border-radius: var(--dm-radius-control); background: var(--dm-color-bg-popup); color: var(--dm-color-text-primary); box-shadow: 0 8px 24px #0002; line-height: 1.5; overflow-wrap: anywhere; pointer-events: none; }
-.popup-sidebar { display: flex; flex-direction: column; width: 84px; flex: none; padding: 16px 8px 12px; border-right: 1px solid var(--dm-color-border); background: var(--dm-color-bg-surface); }
+.popup-shell { position: relative; display: flex; width: 100%; height: 100%; }
+.popup-toast { position: absolute; top: 28%; left: calc(50% + var(--popup-sidebar-width) / 2); transform: translateX(-50%); z-index: 1100; width: max-content; max-width: min(480px, calc(100% - var(--popup-sidebar-width) - 32px)); padding: 14px 22px; border: 1px solid var(--dm-color-border); border-radius: 12px; background: var(--dm-color-bg-popup); color: var(--dm-color-text-primary); box-shadow: 0 12px 32px #0002, 0 2px 6px #0001; font-size: 15px; font-weight: 500; line-height: 1.6; overflow-wrap: anywhere; pointer-events: none; }
+.popup-sidebar { display: flex; flex-direction: column; width: var(--popup-sidebar-width); flex: none; padding: 16px 8px 12px; border-right: 1px solid var(--dm-color-border); background: var(--dm-color-bg-surface); }
 .popup-brand { display: flex; flex-direction: column; align-items: center; gap: 4px; margin-bottom: 24px; }
 .popup-brand img { display: block; width: 42px; height: 42px; }
 .popup-version, .popup-sidebar-footer, .muted, .page-help { color: var(--dm-color-text-secondary); font-size: 11px; }
@@ -59,8 +59,7 @@ body { color: var(--dm-color-text-primary); background: var(--dm-color-bg-canvas
 .cookie-actions .muted { margin-right: auto; }
 .sync-profile-picker { display: flex; flex-direction: column; min-width: 200px; max-width: 320px; max-height: 260px; overflow-y: auto; }
 .sync-profile-option { flex: none; justify-content: flex-start; }
-.cookie-actions, .cookie-feedback { flex: none; }
-.cookie-feedback { color: var(--dm-color-text-secondary); font-size: 11px; }
+.cookie-actions { flex: none; }
 .cookie-table { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: hidden; }
 .cookie-table > .dm-table-panel { flex: 1; min-height: 0; }
 .cookie-table .dm-table-header { flex: none; }

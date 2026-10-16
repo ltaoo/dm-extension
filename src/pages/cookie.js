@@ -50,7 +50,6 @@ export default function CookiePageView({ store }) {
       Button({ store: ui.copy_all$, attributes: { n: "copy-all-button" } }, ["复制全部"]),
       Button({ store: ui.copy_selected$, attributes: { n: "copy-selected-button" } }, [computed(state.selected_count, (count) => `复制已选（${count}）`)]),
     ]),
-    View({ class: "cookie-feedback", attributes: { n: "cookie-feedback", role: "status", hidden: computed(state.cookie_feedback, (message) => !message ? true : undefined) } }, [state.cookie_feedback]),
     Table({
       name: "cookies", rows: state.rows, rowKey: "index", rowSelection: ui.row_selection,
       pagination: {
