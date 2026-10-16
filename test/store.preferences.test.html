@@ -3,10 +3,26 @@ window.addEventListener("error", (event) => document.body.setAttribute("data-tes
 window.addEventListener("unhandledrejection", (event) => document.body.setAttribute("data-test-error", String(event.reason?.message || event.reason)));
 globalThis.chrome = { runtime: { getManifest: () => ({ version: "0.0.0" }) } };
 const { CookieViewModel } = await import("../src/models/store.js");
-const { add_profile_domain, CookieSyncModel, default_settings, settings_key } = await import("../src/models/sync.model.js");
+const { add_profile_domain, CookieSyncModel, default_settings, filter_cookies, settings_key, sync_domain_rule } = await import("../src/models/sync.model.js");
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
+}
+
+// 主域名规则遵循公共及私有后缀，IP 和本地主机保留原值。
+for (const [hostname, expected] of [
+  ["www.zhihu.com", "*.zhihu.com"], ["zhihu.com", "*.zhihu.com"],
+  ["a.b.zhihu.com", "*.zhihu.com"], ["www.example.co.uk", "*.example.co.uk"],
+  ["a.user.github.io", "*.user.github.io"], ["www.食狮.com.cn", "*.xn--85x722f.com.cn"],
+  ["127.0.0.1", "127.0.0.1"], ["[::1]", "[::1]"], ["localhost", "localhost"],
+]) {
+  assert(sync_domain_rule(hostname) === expected, `应正确生成同步域名规则：${hostname}`);
+}
+{
+  const profile = add_profile_domain(default_settings(), sync_domain_rule("www.zhihu.com"));
+  assert(profile.domainFilter.domains[0].domain === "*.zhihu.com", "添加规则应保留通配符");
+  const cookies = ["zhihu.com", ".zhihu.com", "www.zhihu.com", ".www.zhihu.com", "api.zhihu.com", "evilzhihu.com", "zhihu.com.evil.com"].map((domain) => ({ domain }));
+  assert(filter_cookies(cookies, profile.domainFilter).length === 5, "通配规则应匹配主域和子域且排除无关站点");
 }
 
 function create_client(data = {}) {
@@ -157,6 +173,37 @@ for (const delayed of ["before_preferences", "before_profiles"]) {
   again.methods.dispose();
 }
 
+// 复制指定配置的当前草稿：字段完整、独立编辑、保存后可重新打开。
+{
+  const client = create_client();
+  const store = await open(client);
+  store.methods.select_profile("second");
+  store.methods.update("endpoint", "https://sync.example.com/cookies");
+  store.methods.update("enabled", true);
+  store.methods.update("intervalMinutes", "15");
+  store.methods.update("domainFilter.domains", [{ enabled: true, domain: "example.com" }, { enabled: false, domain: "other.com" }]);
+  store.methods.update("encryption.method", "legacy");
+  store.methods.update("encryption.uuid", "test-uuid");
+  store.methods.update("encryption.password", "test-password");
+  const source = structuredClone(store.state.settings.value);
+  store.methods.select_profile("first");
+  store.methods.copy_profile("second");
+  const copy = store.state.settings.value;
+  assert(copy.id !== source.id && copy.name === `${source.name} 副本`, "应复制指定配置并选中独立副本");
+  assert(JSON.stringify({ ...copy, id: source.id, name: source.name }) === JSON.stringify(source), "副本应包含所有字段及未保存编辑");
+  assert(copy.domainFilter !== store.state.profiles.value[1].domainFilter && copy.encryption !== store.state.profiles.value[1].encryption, "嵌套配置不能共享引用");
+  store.methods.update("encryption.password", "copy-password");
+  assert(store.state.profiles.value.find((profile) => profile.id === source.id).encryption.password === "test-password", "编辑副本不能影响原配置");
+  assert(store.state.message.value.includes("尚未保存") && client.profiles.length === 2, "复制应沿用新配置的手动保存行为");
+  store.methods.copy_profile("missing");
+  assert(store.state.profiles.value.length === 3, "无效配置不能复制");
+  await store.methods.save();
+  store.methods.dispose();
+  const reopened = await open(client);
+  assert(reopened.state.active_profile.value === copy.id && reopened.state.settings.value.encryption.password === "copy-password", "保存副本后重新打开应保留内容与选择");
+  reopened.methods.dispose();
+}
+
 // 按 ID 删除非当前配置：取消不修改，确认后保留当前配置及未保存编辑。
 {
   const client = create_client();
@@ -236,10 +283,11 @@ for (const menu of ["cookie-sync", "savepage"]) {
   store.methods.dispose();
 }
 
-// 添加当前域名到指定配置，保存域名变动并保留其他未保存编辑及当前选择。
+// 添加主域名通配规则并跳转至目标配置，保留其他未保存编辑。
 {
   const client = create_client();
-  client.profiles[1].domainFilter.domains = [{ enabled: false, domain: "https://EXAMPLE.com/path" }];
+  client.tabs.query = async () => [{ id: 1, url: "https://a.b.example.com/path" }];
+  client.profiles[1].domainFilter.domains = [{ enabled: false, domain: "unrelated.com" }];
   const store = await open(client);
   store.methods.select_profile("second");
   store.methods.update("name", "未保存的名称");
@@ -248,22 +296,32 @@ for (const menu of ["cookie-sync", "savepage"]) {
   await store.methods.add_to_sync_profile("second");
   const saved = client.profiles.find((profile) => profile.id === "second");
   const draft = store.state.profiles.value.find((profile) => profile.id === "second");
-  assert(saved.domainFilter.domains.length === 1 && saved.domainFilter.domains[0].enabled, "已有的禁用域名应启用且不能重复插入");
+  assert(saved.domainFilter.domains.length === 2 && saved.domainFilter.domains[0].enabled && !saved.domainFilter.domains[1].enabled, "新域名应添加在首行且不改动其他规则");
+  assert(saved.domainFilter.domains[0].domain === "*.example.com" && draft.domainFilter.domains[0].domain === "*.example.com", "保存和草稿中都应显示主域名通配规则");
   assert(saved.name === "配置二" && saved.endpoint !== draft.endpoint, "添加域名不能顺带保存其他编辑");
   assert(draft.name === "未保存的名称" && draft.endpoint === "未保存的接口", "添加域名不能丢弃未保存编辑");
-  assert(store.state.active_profile.value === "first", "添加到其他配置不能改变当前选择");
+  assert(store.state.active_profile.value === "second" && store.state.page.value === "cookie-sync", "添加成功应跳转到同步页并选中目标配置");
+  assert(client.data["cookie-sync-profile"] === "second" && client.data["popup-page"] === "cookie-sync", "跳转后应记住页面与配置选择");
+  assert(store.state.message.value.includes("*.example.com"), "同步页应反馈已添加的规则");
+  store.methods.navigate("cookie");
+  store.methods.select_profile("first");
+  const action_count = client.actions.length;
   await store.methods.add_to_sync_profile("second");
-  assert(client.profiles.find((profile) => profile.id === "second").domainFilter.domains.length === 1, "重复添加应保持幂等");
+  assert(client.profiles.find((profile) => profile.id === "second").domainFilter.domains.length === 2 && client.actions.length === action_count, "重复添加不能修改或重新保存配置");
+  assert(store.state.page.value === "cookie" && store.state.active_profile.value === "first" && store.state.cookie_feedback.value === "该配置已有相同域名", "重复添加应留在原页、保持当前选择并显示提示");
   store.methods.add_profile();
   const id = store.state.active_profile.value;
   store.methods.select_profile("first");
   await store.methods.add_to_sync_profile(id);
-  assert(client.profiles.some((profile) => profile.id === id && profile.domainFilter.domains[0].domain === "example.com"), "未保存的新配置应能添加域名并保存");
+  assert(client.profiles.some((profile) => profile.id === id && profile.domainFilter.domains[0].domain === "*.example.com"), "未保存的新配置应能添加通配规则并保存");
+  assert(store.state.active_profile.value === id && store.state.page.value === "cookie-sync", "新配置保存后应跳转并选中");
+  store.methods.navigate("cookie");
   client.fail_add = true;
   const before = JSON.stringify(store.state.profiles.value);
   await store.methods.add_to_sync_profile("first");
   assert(JSON.stringify(store.state.profiles.value) === before && !store.state.busy.value, "保存失败不能改动配置且应恢复可操作状态");
   assert(store.state.cookie_feedback.value.includes("save failed"), "保存失败应反馈错误");
+  assert(store.state.page.value === "cookie" && store.state.active_profile.value === id, "保存失败应留在原页且不能改变当前配置选择");
   const count = client.actions.length;
   await store.methods.add_to_sync_profile("missing");
   client.tabs.query = async () => [{ id: 1, url: "about:blank" }];
@@ -271,6 +329,22 @@ for (const menu of ["cookie-sync", "savepage"]) {
   await store.methods.add_to_sync_profile("first");
   assert(client.actions.length === count, "无效配置和不支持的页面不能写入同步配置");
   store.methods.dispose();
+}
+
+// 已启用、已禁用和不同写法的相同域名都只提示，不自动修改或跳转。
+for (const domain of ["*.example.com", "example.com", "https://EXAMPLE.com/path", ".example.com"]) {
+  for (const enabled of [true, false]) {
+    const client = create_client();
+    client.profiles[1].domainFilter.domains = [{ enabled, domain }];
+    const store = await open(client);
+    const before = JSON.stringify(store.state.profiles.value);
+    const action_count = client.actions.length;
+    await store.methods.add_to_sync_profile("second");
+    assert(JSON.stringify(store.state.profiles.value) === before && client.actions.length === action_count, "同域名重复添加不能修改规则或写入后台");
+    assert(store.state.page.value === "cookie" && store.state.active_profile.value === "first" && !store.state.busy.value, "重复添加不能跳转或切换配置且应恢复可操作状态");
+    assert(store.state.cookie_feedback.value === "该配置已有相同域名", "重复添加应显示指定提示");
+    store.methods.dispose();
+  }
 }
 
 // 后台串行添加域名：持久化到指定配置，既有字段保持原样。
@@ -282,10 +356,10 @@ for (const menu of ["cookie-sync", "savepage"]) {
   };
   const model = CookieSyncModel(client, async () => { throw new Error("添加域名不应发起同步请求"); });
   await model.ready;
-  await Promise.all([model.run("add-domain", { id: "second", domain: "example.com" }), model.run("add-domain", { id: "second", domain: "other.com" })]);
+  await Promise.all([model.run("add-domain", { id: "second", domain: "*.example.com" }), model.run("add-domain", { id: "second", domain: "*.other.com" })]);
   const saved = data[settings_key].profiles;
   assert(saved[0].domainFilter.domains[0].domain === "", "后台不能改动未选中的配置");
-  assert(saved[1].domainFilter.domains.slice(0, 2).map((row) => row.domain).join("|") === "other.com|example.com", "并发添加不能覆盖彼此的域名");
+  assert(saved[1].domainFilter.domains.slice(0, 2).map((row) => row.domain).join("|") === "*.other.com|*.example.com", "并发添加不能覆盖彼此的域名或丢失通配符");
   const before = JSON.stringify(saved);
   for (const value of [{ id: "missing", domain: "example.com" }, { id: "second", domain: "*" }]) {
     let rejected = false;

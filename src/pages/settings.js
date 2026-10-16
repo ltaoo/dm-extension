@@ -82,7 +82,7 @@ export default function SettingsPageView({ store }) {
             " 项目下载功能的配套浏览器插件，提供 Cookie 管理、同步和页面保存功能。",
           ]),
           View({ attributes: { n: "about-features", role: "list", "aria-label": "应用功能" } }, [
-            View({ attributes: { n: "about-cookie-feature", role: "listitem" } }, ["Cookie 管理：查看当前页面的 Cookie，复制全部或选中项，并将当前域名添加到同步配置。"]),
+            View({ attributes: { n: "about-cookie-feature", role: "listitem" } }, ["Cookie 管理：查看当前页面的 Cookie，复制全部或选中项，并将当前站点的主域名通配规则添加到同步配置。"]),
             View({ attributes: { n: "about-sync-feature", role: "listitem" } }, ["Cookie 同步：管理多组接口配置，按域名规则定时同步，支持加密传输。"]),
             View({ attributes: { n: "about-save-feature", role: "listitem" } }, ["保存页面：获取当前页面内容并下载为 HTML 文件。"]),
           ]),

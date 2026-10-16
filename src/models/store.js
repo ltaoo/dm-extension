@@ -1,6 +1,6 @@
 import "../../assets/vendor/timeless.umd.min.js";
 import { createInputStore, createCheckboxStore } from "../../assets/vendor/src/dmui.js";
-import { add_profile_domain, default_settings, status_key, validate_settings } from "./sync.model.js";
+import { add_profile_domain, default_settings, domain_rules, status_key, sync_domain_rule, validate_settings } from "./sync.model.js";
 import { comparison_groups_key, default_comparison_group, group_comparison_records, normalize_group_names } from "../compare/compare.model.js";
 import { capture_snapshot } from "../save/snapshot.model.js";
 import { capture_page_screenshot } from "../save/screenshot.model.js";
@@ -307,6 +307,7 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
   let copy_feedback_timer;
   let savepage_copy_timer;
   let clip_copy_timer;
+  let message_timer;
   let navigated = false;
   let settings_navigated = false;
   let hydrating_profile = true;
@@ -567,6 +568,13 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
     return profiles_.value.length > 1 && (saved_profiles_.value.length > 1 || !saved_profiles_.value.some((profile) => profile.id === id));
   }
 
+  function show_message(message) {
+    if (disposed) return;
+    clearTimeout(message_timer);
+    message_.as(message);
+    if (message) message_timer = setTimeout(() => message_.as(""), 4000);
+  }
+
   const methods = {
     async download_page(format = "html") {
       if (page_saving_.value || savepage_loading_.value || busy_.value) return;
@@ -628,15 +636,27 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
       }
     },
     async add_to_sync_profile(id) {
-      const domain = page_domain_.value;
+      const hostname = page_domain_.value;
       const profile = profiles_.value.find((item) => item.id === id);
-      if (busy_.value || loading_.value || !domain || !profile) return;
+      if (busy_.value || loading_.value || !hostname || !profile) return;
       busy_.as(true);
       try {
+        const domain = sync_domain_rule(hostname);
+        const normalized_domain = domain_rules(domain)[0];
+        if (profile.domainFilter.domains.some((row) => domain_rules(row.domain).includes(normalized_domain))) {
+          cookie_feedback_.as("该配置已有相同域名");
+          ui.sync_profiles$.hide();
+          return;
+        }
         if (saved_profiles_.value.some((item) => item.id === id)) await send("add-domain", { id, domain });
         else await send("save", add_profile_domain(profile, domain));
         cookie_feedback_.as(`已将 ${domain} 添加到「${profile.name || "未命名"}」`);
         ui.sync_profiles$.hide();
+        active_profile_.as(id);
+        methods.navigate("cookie-sync");
+        show_message(cookie_feedback_.value);
+        const input = ui.domains$.fields[0].field.fields.domain.input;
+        queueMicrotask(() => input.focus());
       } catch (error) {
         cookie_feedback_.as(`添加到同步配置失败：${error.message}`);
       } finally {
@@ -658,7 +678,7 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
     select_profile(id) {
       if (!busy_.value && profiles_.value.some((profile) => profile.id === id)) {
         active_profile_.as(id);
-        message_.as("");
+        show_message("");
       }
     },
     add_profile() {
@@ -666,7 +686,20 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
       const profile = default_settings(crypto.randomUUID(), `配置 ${profiles_.value.length + 1}`);
       profiles_.as([...profiles_.value, profile]);
       active_profile_.as(profile.id);
-      message_.as("新配置尚未保存");
+      show_message("新配置尚未保存");
+    },
+    copy_profile(id) {
+      const source = profiles_.value.find((profile) => profile.id === id);
+      if (busy_.value || !source) return;
+      const profile = { ...structuredClone(source), id: crypto.randomUUID(), name: `${source.name || "未命名"} 副本` };
+      profiles_.as([...profiles_.value, profile]);
+      active_profile_.as(profile.id);
+      show_message("配置已复制，尚未保存");
+    },
+    open_profile_menu(id) {
+      if (busy_.value || !profiles_.value.some((profile) => profile.id === id)) return;
+      for (const [profile_id, buttons] of profile_buttons) if (profile_id !== id) buttons.menu.hide();
+      ui.profile_button(id).menu.show();
     },
     async remove_profile(id = active_profile_.value) {
       const profile = profiles_.value.find((item) => item.id === id);
@@ -680,10 +713,11 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
           profiles_.as(profiles_.value.filter((item) => item.id !== profile.id));
           if (active_profile_.value === id) active_profile_.as(profiles_.value[0].id);
         }
+        profile_buttons.get(profile.id)?.menu.unmount();
         profile_buttons.delete(profile.id);
-        message_.as("配置已删除");
+        show_message("配置已删除");
       } catch (error) {
-        message_.as(error.message);
+        show_message(error.message);
       } finally {
         busy_.as(false);
       }
@@ -692,10 +726,11 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
       if (!Object.hasOwn(PAGE_TITLES, page) || page === page_.value) return;
       navigated = true;
       ui.sync_profiles$.hide();
+      for (const buttons of profile_buttons.values()) buttons.menu.hide();
       clearTimeout(page_transition_timer);
       leaving_page_.as(page_.value);
       page_.as(page);
-      client.storage.local.set({ "popup-page": page }).catch((error) => message_.as(`保存页面位置失败：${error.message}`));
+      client.storage.local.set({ "popup-page": page }).catch((error) => show_message(`保存页面位置失败：${error.message}`));
       page_transition_timer = setTimeout(() => leaving_page_.as(""), 180);
       load_page_later();
     },
@@ -703,7 +738,7 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
       client.storage.onChanged.addListener(on_storage_changed);
       const [saved] = await Promise.all([
         client.storage.local.get(["popup-page", "settings-menu", "cookie-sync-profile"]).catch((error) => {
-          message_.as(error.message);
+          show_message(error.message);
           return {};
         }),
         load_parsers(),
@@ -711,13 +746,13 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
         load_clips(),
         load_detection_rules(),
         load_tab().catch((error) => cookie_error_.as(error.message)),
-        send("get").catch((error) => message_.as(error.message)),
+        send("get").catch((error) => show_message(error.message)),
       ]);
       let saved_page = saved["popup-page"] === "settings" && saved["settings-menu"] === "cookie-sync" ? "cookie-sync" : saved["popup-page"];
       if (["savepage", "clip", "detect"].includes(saved_page)) saved_page = "save-page";
       if (!navigated && Object.hasOwn(PAGE_TITLES, saved_page)) page_.as(saved_page);
       if (saved["settings-menu"] === "cookie-sync") {
-        await client.storage.local.set({ "popup-page": page_.value, "settings-menu": "savepage" }).catch((error) => message_.as(`迁移同步页面位置失败：${error.message}`));
+        await client.storage.local.set({ "popup-page": page_.value, "settings-menu": "savepage" }).catch((error) => show_message(`迁移同步页面位置失败：${error.message}`));
       }
       if (!settings_navigated && ["savepage", "about"].includes(saved["settings-menu"])) settings_menu_.as(saved["settings-menu"]);
       if (profiles_.value.some((profile) => profile.id === saved["cookie-sync-profile"])) active_profile_.as(saved["cookie-sync-profile"]);
@@ -733,7 +768,9 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
       clearTimeout(copy_feedback_timer);
       clearTimeout(savepage_copy_timer);
       clearTimeout(clip_copy_timer);
+      clearTimeout(message_timer);
       client.storage.onChanged.removeListener(on_storage_changed);
+      for (const buttons of profile_buttons.values()) buttons.menu.unmount();
     },
     refresh,
     refresh_page,
@@ -785,7 +822,7 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
       if (!["savepage", "about"].includes(name) || name === settings_menu_.value) return;
       settings_navigated = true;
       settings_menu_.as(name);
-      client.storage.local.set({ "settings-menu": name }).catch((error) => message_.as(`保存设置菜单位置失败：${error.message}`));
+      client.storage.local.set({ "settings-menu": name }).catch((error) => show_message(`保存设置菜单位置失败：${error.message}`));
     },
     add_parser() {
       if (busy_.value) return;
@@ -1042,12 +1079,12 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
     async save(sync = false) {
       if (busy_.value) return;
       busy_.as(true);
-      message_.as(sync ? "正在同步…" : "正在保存…");
+      show_message(sync ? "正在同步…" : "正在保存…");
       try {
         await send(sync ? "sync" : "save");
-        message_.as(sync ? "" : `「${settings_.value.name}」已保存`);
+        show_message(sync ? "" : `「${settings_.value.name}」已保存`);
       } catch (error) {
-        message_.as(error.message);
+        show_message(error.message);
       } finally {
         busy_.as(false);
       }
@@ -1156,15 +1193,20 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
         const tab = new vm.ButtonCore({ variant: "ghost", size: "sm", onClick: () => methods.select_profile(id) });
         const remove = new vm.ButtonCore({ variant: "ghost", size: "icon-sm", onClick: () => methods.remove_profile(id) });
         const add_domain = new vm.ButtonCore({ variant: "ghost", size: "sm", onClick: () => methods.add_to_sync_profile(id) });
+        const menu = new vm.PopoverCore({ side: "bottom", align: "start" });
+        const copy_item = new vm.ButtonCore({ variant: "ghost", size: "sm", onClick: () => { menu.hide(); methods.copy_profile(id); } });
+        const remove_item = new vm.ButtonCore({ variant: "ghost", size: "sm", onClick: () => { menu.hide(); methods.remove_profile(id); } });
         const disabled = combine({ busy: busy_, profiles: profiles_, saved: saved_profiles_ }, () => busy_.value || !can_remove_profile(id));
         const update = () => {
           disabled.value ? remove.disable() : remove.enable();
+          disabled.value ? remove_item.disable() : remove_item.enable();
+          busy_.value ? copy_item.disable() : copy_item.enable();
           add_to_sync_disabled_.value ? add_domain.disable() : add_domain.enable();
         };
         disabled.subscribe({ onChange: update });
         add_to_sync_disabled_.subscribe({ onChange: update });
         update();
-        profile_buttons.set(id, { tab, remove, add_domain });
+        profile_buttons.set(id, { tab, remove, add_domain, menu, copy_item, remove_item });
       }
       return profile_buttons.get(id);
     },
@@ -1314,7 +1356,7 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
   download_default_filename_.subscribe({ onChange: (value) => ui.download_name$.setPlaceholder(value) });
   active_profile_.subscribe({ onChange(id) {
     if (hydrating_profile) return;
-    client.storage.local.set({ "cookie-sync-profile": id }).catch((error) => message_.as(`保存配置选择失败：${error.message}`));
+    client.storage.local.set({ "cookie-sync-profile": id }).catch((error) => show_message(`保存配置选择失败：${error.message}`));
   } });
   page_parsers_.subscribe({ onChange(list) {
     const rows = list.map((item) => ({ domain: item.domain, parser: item.parser }));

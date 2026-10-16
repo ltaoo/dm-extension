@@ -4,6 +4,7 @@ html, body, #root { width: 780px; height: 580px; margin: 0; overflow: hidden; }
 body { color: var(--dm-color-text-primary); background: var(--dm-color-bg-canvas); }
 [hidden] { display: none !important; }
 .popup-shell { display: flex; width: 100%; height: 100%; }
+.popup-toast { position: fixed; top: 16px; left: 50%; transform: translateX(-50%); z-index: 1100; width: max-content; max-width: calc(100vw - 32px); padding: 10px 16px; border: 1px solid var(--dm-color-border); border-radius: var(--dm-radius-control); background: var(--dm-color-bg-popup); color: var(--dm-color-text-primary); box-shadow: 0 8px 24px #0002; line-height: 1.5; overflow-wrap: anywhere; pointer-events: none; }
 .popup-sidebar { display: flex; flex-direction: column; width: 84px; flex: none; padding: 16px 8px 12px; border-right: 1px solid var(--dm-color-border); background: var(--dm-color-bg-surface); }
 .popup-brand { display: flex; flex-direction: column; align-items: center; gap: 4px; margin-bottom: 24px; }
 .popup-brand img { display: block; width: 42px; height: 42px; }
@@ -158,6 +159,8 @@ body { color: var(--dm-color-text-primary); background: var(--dm-color-bg-canvas
 .profile-tab-wrap.is-active { color: var(--dm-color-primary); background: var(--dm-color-primary-soft); }
 .profile-tab { flex: none; }
 .profile-remove { flex: none; }
+.profile-context-menu { display: flex; flex-direction: column; width: 120px; }
+.profile-context-menu button { justify-content: flex-start; }
 .settings-actions { flex: none; justify-content: flex-end; }
 .settings-message { text-align: right; }
 .settings-card { display: flex; flex-direction: column; gap: 12px; padding: 14px; margin-bottom: 12px; }
@@ -181,6 +184,5 @@ body { color: var(--dm-color-text-primary); background: var(--dm-color-bg-canvas
 .schedule-row .settings-field { flex: none; width: 240px; }
 .settings-footer { display: flex; align-items: center; gap: 12px; flex: none; border-top: 1px solid var(--dm-color-border); padding: 10px 20px; background: var(--dm-color-bg-surface); }
 .settings-feedback { display: flex; align-items: center; gap: 12px; flex: 1; min-width: 0; }
-.cookie-sync-page .settings-feedback { flex-direction: column; align-items: stretch; gap: 2px; }
 .sync-status, .settings-message { flex: 1; min-width: 0; font-size: 11px; line-height: 16px; color: var(--dm-color-text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .sync-status.error { color: var(--dm-color-danger); }

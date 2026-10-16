@@ -42,7 +42,7 @@
 
 以下为 `1.0.0` 版本界面，使用虚构的 `example.com` 演示数据。
 
-**Cookie**：查看站点 Cookie，选择后复制，或将域名添加到同步配置。
+**Cookie**：查看站点 Cookie，选择后复制，或选择同步配置，添加当前站点的 `*.主域名` 规则（例如 `www.zhihu.com` → `*.zhihu.com`）并跳转到该配置。已有相同域名时仅提示，不修改或跳转。IP 地址及 localhost 保留原值。
 
 ![Cookie 页面：站点 Cookie 列表与复制操作](assets/screenshots/cookies.png)
 
@@ -169,12 +169,12 @@ python3 -m http.server 8791 --bind 127.0.0.1
 
 ### 更新版本与资源
 
-- 显示版本来自 [manifest.json](manifest.json) 的 `version_name`（当前 `1.0.0`），内部版本为 `version`（当前 `1.0.0`）；发布时同步修改两者。
-- 将版本修改与代码提交后，推送 tag 即可触发 [Release workflow](.github/workflows/release.yml)，自动打包并上传 `dm-extension.zip` 到对应的 GitHub Release；重复运行会更新同名附件。工作流不会自动修改扩展版本。例如发布 `1.0.0`：
+- 显示版本来自 [manifest.json](manifest.json) 的 `version_name`（当前 `1.1.0`），内部版本为 `version`（当前 `1.1.0`）；发布时同步修改两者。
+- 将版本修改与代码提交后，推送 tag 即可触发 [Release workflow](.github/workflows/release.yml)，自动打包并上传 `dm-extension.zip` 到对应的 GitHub Release；重复运行会更新同名附件。工作流不会自动修改扩展版本。例如发布 `1.1.0`：
 
   ```sh
-  git tag v1.0.0
-  git push origin v1.0.0
+  git tag v1.1.0
+  git push origin v1.1.0
   ```
 
 - UI 资产已随仓库提供。`scripts/sync-ui-assets.sh` 依赖上级目录原主前端的 `src/` 与 `public/`，独立仓库无需执行。
@@ -198,7 +198,7 @@ python3 -m http.server 8791 --bind 127.0.0.1
 
 ## 许可证
 
-本项目采用 [MIT 许可证](LICENSE)。第三方资源的许可见 [Timeless.LICENSE](assets/vendor/Timeless.LICENSE) 与 [CryptoJS.LICENSE](assets/vendor/CryptoJS.LICENSE)。
+本项目采用 [MIT 许可证](LICENSE)。第三方资源的许可见 [Timeless.LICENSE](assets/vendor/Timeless.LICENSE)、[CryptoJS.LICENSE](assets/vendor/CryptoJS.LICENSE) 与 [Tldts.LICENSE](assets/vendor/Tldts.LICENSE)。主域名解析使用本地打包的 [tldts](https://github.com/remusao/tldts) 7.4.18，包含公共及私有后缀规则，更新时替换 `assets/vendor/tldts.esm.min.js`。
 
 ## 致谢与参考
 

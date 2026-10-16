@@ -61,6 +61,7 @@ function PopupView() {
         SettingsPageView({ store: cookie$ }),
       ]),
     ]),
+    View({ class: "popup-toast", attributes: { n: "popup-toast", role: "status", "aria-atomic": "true", hidden: computed(state.message, (message) => !message ? true : undefined) } }, [state.message]),
   ]);
 }
 

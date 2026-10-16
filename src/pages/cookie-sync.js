@@ -1,4 +1,4 @@
-import { ArrayField, Button, Card, Checkbox, IconButton, Input, Label, Select, Tabs } from "../../assets/vendor/src/dmui.js";
+import { ArrayField, Button, Card, Checkbox, IconButton, Input, Label, Popover, Select, Tabs } from "../../assets/vendor/src/dmui.js";
 
 const { View, Icon, computed, combine, classNames } = window.Timeless;
 
@@ -32,10 +32,48 @@ export default function CookieSyncPageView({ store }) {
         render(profile) {
           const active = computed(state.active_profile, (id) => id === profile.id);
           const buttons = ui.profile_button(profile.id);
+          const open_menu = (event) => {
+            event.preventDefault();
+            const rect = event.currentTarget.getBoundingClientRect();
+            const anchor = DOMRect.fromRect(event.type === "contextmenu" && (event.clientX || event.clientY)
+              ? { x: event.clientX, y: event.clientY, width: 0, height: 0 }
+              : { x: rect.left, y: rect.bottom, width: 0, height: 0 });
+            buttons.menu.popper.setReference({ $el: event.currentTarget, getRect: () => anchor }, { force: true });
+            store.methods.open_profile_menu(profile.id);
+            requestAnimationFrame(() => document.querySelector(`[n="profile-context-menu"][data-profile-id="${profile.id}"] button`)?.focus());
+          };
           return View({
             class: classNames(["profile-tab-wrap", computed(active, (selected) => selected ? "is-active" : "")]),
             attributes: { n: "profile-tab-wrap", "data-profile-id": profile.id },
+            onContextMenu: open_menu,
+            onKeyDown(event) {
+              if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) open_menu(event);
+            },
           }, [
+            Popover({
+              store: buttons.menu, class: "profile-context-menu",
+              attributes: { n: "profile-context-menu", "data-profile-id": profile.id, role: "menu", "aria-label": "配置操作" },
+              onKeyDown(event) {
+                if (event.key === "Escape") {
+                  buttons.menu.hide();
+                  document.querySelector(`[n="profile-tab"][data-profile-id="${profile.id}"]`)?.focus();
+                } else if (["ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) {
+                  const items = [...event.currentTarget.querySelectorAll("button:not(:disabled)")];
+                  const index = items.indexOf(document.activeElement);
+                  const next = event.key === "Home" ? 0 : event.key === "End" ? items.length - 1 : (index + (event.key === "ArrowUp" ? -1 : 1) + items.length) % items.length;
+                  items[next]?.focus();
+                } else if (event.key === "Tab") {
+                  buttons.menu.hide();
+                  return;
+                } else return;
+                event.preventDefault();
+                event.stopPropagation();
+              },
+              content: [
+                Button({ store: buttons.copy_item, attributes: { n: "copy-profile-menu-item", role: "menuitem" } }, ["复制"]),
+                Button({ store: buttons.remove_item, attributes: { n: "remove-profile-menu-item", role: "menuitem" } }, ["删除"]),
+              ],
+            }),
             Button({
               store: buttons.tab, class: "profile-tab",
               attributes: { n: "profile-tab", "data-profile-id": profile.id, role: "tab", "aria-selected": computed(active, String), tabindex: computed(active, (selected) => selected ? "0" : "-1") },
@@ -87,7 +125,6 @@ export default function CookieSyncPageView({ store }) {
     View({ class: "settings-footer", attributes: { n: "settings-footer" } }, [
       View({ class: "settings-feedback", attributes: { n: "settings-feedback" } }, [
         View({ class: classNames(["sync-status", computed(state.status, (status) => status.error ? "error" : "")]), attributes: { n: "sync-status", role: "status", title: state.sync_message } }, [state.sync_message]),
-        View({ class: "settings-message", attributes: { n: "settings-message", role: "status", title: state.message, hidden: computed(state.message, (message) => !message ? true : undefined) } }, [state.message]),
       ]),
       View({ class: "settings-actions", attributes: { n: "sync-actions" } }, [
         Button({ store: ui.save$, attributes: { n: "save-button" } }, ["保存当前"]),

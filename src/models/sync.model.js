@@ -1,4 +1,5 @@
 import CryptoJS from "../../assets/vendor/crypto-js.js";
+import { getDomain } from "../../assets/vendor/tldts.esm.min.js";
 
 export const settings_key = "cookie-sync-settings";
 export const status_key = "cookie-sync-status";
@@ -46,17 +47,26 @@ export function filter_cookies(cookies, filter) {
   });
 }
 
+export function sync_domain_rule(hostname) {
+  const domain = normalize_domain(typeof hostname === "string" ? hostname : "");
+  if (!domain || domain === "*") throw new Error("当前页面域名无效");
+  const root = getDomain(domain, { allowPrivateDomains: true });
+  return root ? `*.${root}` : domain;
+}
+
 export function add_profile_domain(profile, value) {
   if (!profile) throw new Error("同步配置不存在");
   const domains = domain_rules(typeof value === "string" ? value : "");
   if (domains.length !== 1 || domains[0] === "*") throw new Error("当前页面域名无效");
   const domain = domains[0];
+  const wildcard = value.trim().startsWith("*.");
+  const rule = wildcard ? `*.${domain}` : domain;
   const next = structuredClone(profile);
   const rows = next.domainFilter.domains;
   const matches = (row) => domain_rules(row.domain).includes(domain);
   next.domainFilter.domains = rows.some(matches)
-    ? rows.map((row) => matches(row) ? { ...row, enabled: true } : row)
-    : [{ enabled: true, domain }, ...rows];
+    ? rows.map((row) => matches(row) ? { ...row, enabled: true, domain: wildcard ? rule : row.domain } : row)
+    : [{ enabled: true, domain: rule }, ...rows];
   return next;
 }
 
@@ -105,13 +115,11 @@ export function validate_settings(value) {
 }
 
 export function build_request(cookies, settings) {
-  const cookie_data = Object.create(null);
-  for (const cookie of cookies) (cookie_data[cookie.domain] ??= []).push(cookie);
-  const data = { cookies, cookie_data, local_storage_data: {}, update_time: new Date().toISOString() };
+  const plaintext = JSON.stringify(cookies);
+  const update_time = new Date().toISOString();
   const { method, uuid, password } = settings.encryption;
-  if (method === "none") return { ...data, crypto_type: "none" };
+  if (method === "none") return { data: plaintext, update_time, crypto_type: "none" };
   const key = CryptoJS.MD5(`${uuid}-${password}`).toString().substring(0, 16);
-  const plaintext = JSON.stringify(data);
   const encrypted = method === "legacy"
     ? CryptoJS.AES.encrypt(plaintext, key).toString()
     : CryptoJS.AES.encrypt(plaintext, CryptoJS.enc.Utf8.parse(key), {
@@ -119,7 +127,7 @@ export function build_request(cookies, settings) {
       mode: CryptoJS.mode.CBC,
       padding: CryptoJS.pad.Pkcs7,
     }).ciphertext.toString(CryptoJS.enc.Base64);
-  return { uuid, encrypted, crypto_type: method };
+  return { uuid, data: encrypted, update_time, crypto_type: method };
 }
 
 export function CookieSyncModel(client = chrome, request = fetch) {
