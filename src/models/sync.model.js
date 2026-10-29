@@ -117,8 +117,9 @@ export function validate_settings(value) {
 export function build_request(cookies, settings) {
   const plaintext = JSON.stringify(cookies);
   const update_time = new Date().toISOString();
+  const domains = domain_rules(settings.domainFilter.domains);
   const { method, uuid, password } = settings.encryption;
-  if (method === "none") return { data: plaintext, update_time, crypto_type: "none" };
+  if (method === "none") return { data: plaintext, update_time, crypto_type: "none", domains };
   const key = CryptoJS.MD5(`${uuid}-${password}`).toString().substring(0, 16);
   const encrypted = method === "legacy"
     ? CryptoJS.AES.encrypt(plaintext, key).toString()
@@ -127,7 +128,7 @@ export function build_request(cookies, settings) {
       mode: CryptoJS.mode.CBC,
       padding: CryptoJS.pad.Pkcs7,
     }).ciphertext.toString(CryptoJS.enc.Base64);
-  return { uuid, data: encrypted, update_time, crypto_type: method };
+  return { uuid, data: encrypted, update_time, crypto_type: method, domains };
 }
 
 export function CookieSyncModel(client = chrome, request = fetch) {
@@ -198,13 +199,15 @@ export function CookieSyncModel(client = chrome, request = fetch) {
         signal: AbortSignal.timeout(20000),
       });
       const text = await response.text();
-      if (!response.ok) throw new Error(`同步接口返回 HTTP ${response.status}`);
       let payload;
       try { payload = JSON.parse(text); } catch { /* 兼容返回纯文本的同步接口。 */ }
+      if (!response.ok) throw new Error(String(payload?.message || `同步接口返回 HTTP ${response.status}`));
       if (payload && ((payload.code !== undefined && payload.code !== 0) || payload.success === false)) {
         throw new Error(String(payload.msg || payload.message || "同步接口返回失败"));
       }
-      await save_status(id, { syncing: false, error: "", message: `已同步 ${cookies.length} 项 Cookie`, cookieCount: cookies.length, lastSuccessAt: new Date().toISOString() });
+      const accepted = payload?.cookieCount ?? payload?.count ?? payload?.data?.count;
+      const count = Number.isInteger(accepted) && accepted >= 0 ? accepted : cookies.length;
+      await save_status(id, { syncing: false, error: "", message: `已同步 ${count} 项 Cookie`, cookieCount: count, lastSuccessAt: new Date().toISOString() });
     } catch (error) {
       await save_status(id, { syncing: false, error: error.message, message: `同步失败：${error.message}` });
     }

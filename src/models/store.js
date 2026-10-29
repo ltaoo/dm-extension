@@ -245,6 +245,7 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
   const message_ = ref("");
   const cookie_error_ = ref("");
   const sync_profiles_open_ = ref(false);
+  const sync_selection_ = ref([]);
   const copied_domain_ = ref("");
   const loading_ = ref(false);
   const busy_ = ref(true);
@@ -634,27 +635,36 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
         page_saving_.as(false);
       }
     },
-    async add_to_sync_profile(id) {
+    toggle_sync_profile(id, checked) {
+      const selection = sync_selection_.value;
+      if (checked && selection.includes(id)) return;
+      sync_selection_.as(checked ? [...selection, id] : selection.filter((item) => item !== id));
+    },
+    async add_to_sync_profiles(ids = sync_selection_.value) {
       const hostname = page_domain_.value;
-      const profile = profiles_.value.find((item) => item.id === id);
-      if (busy_.value || loading_.value || !hostname || !profile) return;
+      const targets = profiles_.value.filter((profile) => ids.includes(profile.id));
+      if (busy_.value || loading_.value || !hostname || !targets.length) return;
       busy_.as(true);
       try {
         const domain = sync_domain_rule(hostname);
         const normalized_domain = domain_rules(domain)[0];
-        if (profile.domainFilter.domains.some((row) => domain_rules(row.domain).includes(normalized_domain))) {
-          show_message("该配置已有相同域名");
-          ui.sync_profiles$.hide();
-          return;
+        const added = [];
+        let skipped = 0;
+        for (const profile of targets) {
+          if (profile.domainFilter.domains.some((row) => domain_rules(row.domain).includes(normalized_domain))) {
+            skipped += 1;
+            continue;
+          }
+          if (saved_profiles_.value.some((item) => item.id === profile.id)) await send("add-domain", { id: profile.id, domain });
+          else await send("save", add_profile_domain(profile, domain));
+          added.push(profile.name || "未命名");
         }
-        if (saved_profiles_.value.some((item) => item.id === id)) await send("add-domain", { id, domain });
-        else await send("save", add_profile_domain(profile, domain));
         ui.sync_profiles$.hide();
-        active_profile_.as(id);
-        methods.navigate("cookie-sync");
-        show_message(`已将 ${domain} 添加到「${profile.name || "未命名"}」`);
-        const input = ui.domains$.fields[0].field.fields.domain.input;
-        queueMicrotask(() => input.focus());
+        if (!added.length) show_message(targets.length === 1 ? "该配置已有相同域名" : "所选配置已有相同域名");
+        else {
+          const message = added.length === 1 ? `已将 ${domain} 添加到「${added[0]}」` : `已将 ${domain} 添加到 ${added.length} 个配置`;
+          show_message(skipped ? `${message}，${skipped} 个配置已有相同域名` : message);
+        }
       } catch (error) {
         show_message(`添加到同步配置失败：${error.message}`);
       } finally {
@@ -1092,7 +1102,7 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
   const state = {
       profiles: profiles_, saved_profiles: saved_profiles_, active_profile: active_profile_, statuses: statuses_,
       cookie_error: cookie_error_, copied_domain: copied_domain_,
-      sync_profiles_open: sync_profiles_open_,
+      sync_profiles_open: sync_profiles_open_, sync_selection: sync_selection_,
       domain_count: computed(settings_, (settings) => settings.domainFilter.domains.length),
       profile_titles: combine({ profiles: profiles_, saved: saved_profiles_ }, ({ profiles, saved }) => Object.fromEntries(profiles.map((profile) => [profile.id,
         `${profile.name || "未命名"}${JSON.stringify(profile) !== JSON.stringify(saved.find((item) => item.id === profile.id)) ? " *" : ""}`,
@@ -1190,7 +1200,6 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
       if (!profile_buttons.has(id)) {
         const tab = new vm.ButtonCore({ variant: "ghost", size: "sm", onClick: () => methods.select_profile(id) });
         const remove = new vm.ButtonCore({ variant: "ghost", size: "icon-sm", onClick: () => methods.remove_profile(id) });
-        const add_domain = new vm.ButtonCore({ variant: "ghost", size: "sm", onClick: () => methods.add_to_sync_profile(id) });
         const menu = new vm.PopoverCore({ side: "bottom", align: "start" });
         const copy_item = new vm.ButtonCore({ variant: "ghost", size: "sm", onClick: () => { menu.hide(); methods.copy_profile(id); } });
         const remove_item = new vm.ButtonCore({ variant: "ghost", size: "sm", onClick: () => { menu.hide(); methods.remove_profile(id); } });
@@ -1199,12 +1208,11 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
           disabled.value ? remove.disable() : remove.enable();
           disabled.value ? remove_item.disable() : remove_item.enable();
           busy_.value ? copy_item.disable() : copy_item.enable();
-          add_to_sync_disabled_.value ? add_domain.disable() : add_domain.enable();
         };
         disabled.subscribe({ onChange: update });
-        add_to_sync_disabled_.subscribe({ onChange: update });
+        busy_.subscribe({ onChange: update });
         update();
-        profile_buttons.set(id, { tab, remove, add_domain, menu, copy_item, remove_item });
+        profile_buttons.set(id, { tab, remove, menu, copy_item, remove_item });
       }
       return profile_buttons.get(id);
     },
@@ -1318,6 +1326,7 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
     clip_pseudo$: createCheckboxStore({ checked: computed(clip_options_, (options) => options.materialize_pseudo), onChange: (value) => methods.set_clip_option("materialize_pseudo", value) }),
     add_to_sync$: new vm.ButtonCore({ variant: "outline", size: "sm", onClick: () => ui.sync_profiles$.toggle() }),
     sync_profiles$: new vm.PopoverCore({ side: "bottom", align: "end", offsetY: 6 }),
+    confirm_sync_profiles$: new vm.ButtonCore({ variant: "primary", size: "sm", onClick: () => methods.add_to_sync_profiles() }),
     copy_all$: new vm.ButtonCore({ variant: "outline", size: "sm", onClick: () => methods.copy(true) }),
     copy_selected$: new vm.ButtonCore({ variant: "primary", size: "sm", onClick: () => methods.copy() }),
     save$: new vm.ButtonCore({ variant: "outline", size: "sm", onClick: () => methods.save() }),
@@ -1348,7 +1357,7 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
       onChange: (value) => methods.update(field, value),
     });
   }
-  ui.sync_profiles$.onShow(() => sync_profiles_open_.as(true));
+  ui.sync_profiles$.onShow(() => { sync_selection_.as([]); sync_profiles_open_.as(true); });
   ui.sync_profiles$.onHide(() => sync_profiles_open_.as(false));
   ui.download_name$.setPlaceholder(download_default_filename_.value);
   download_default_filename_.subscribe({ onChange: (value) => ui.download_name$.setPlaceholder(value) });
@@ -1383,6 +1392,7 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
     [combine({ loading: clip_loading_, available: state.clip_available }, (s) => s.loading || !s.available), ui.start_clip$],
     [computed(clip_records_, (records) => !records.length), ui.clear_clips$],
     [add_to_sync_disabled_, ui.add_to_sync$],
+    [combine({ selection: sync_selection_, loading: loading_, busy: busy_ }, (s) => s.loading || s.busy || !s.selection.length), ui.confirm_sync_profiles$],
     [combine({ cookies: cookies_, loading: loading_ }, (s) => s.loading || !s.cookies.length), ui.copy_all$],
     [combine({ count: state.selected_count, loading: loading_ }, (s) => s.loading || !s.count), ui.copy_selected$],
     [combine({ busy: busy_, saving: page_saving_, loading: savepage_loading_, available: download_available_ }, (s) => s.busy || s.saving || s.loading || !s.available), ui.download_page$],

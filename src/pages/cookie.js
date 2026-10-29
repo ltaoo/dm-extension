@@ -1,4 +1,4 @@
-import { Button, IconButton, Popover, Table } from "../../assets/vendor/src/dmui.js";
+import { Button, Checkbox, IconButton, Popover, Table, createCheckboxStore } from "../../assets/vendor/src/dmui.js";
 
 const { View, Icon, Show, For, computed, combine } = window.Timeless;
 
@@ -30,13 +30,23 @@ export default function CookiePageView({ store }) {
         attributes: { n: "sync-profile-picker", role: "dialog", "aria-label": "选择同步配置" },
         content: [Show({
           when: state.sync_profiles_open,
-          ok: () => For({
-            each: state.profiles, key: "id",
-            render: (profile) => Button({
-              store: ui.profile_button(profile.id).add_domain, class: "sync-profile-option",
-              attributes: { n: "sync-profile-option", "data-profile-id": profile.id },
-            }, [computed(state.profile_titles, (titles) => titles[profile.id])]),
-          }),
+          ok: () => View({ class: "sync-profile-list", attributes: { n: "sync-profile-list" } }, [
+            For({
+              each: state.profiles, key: "id",
+              render: (profile) => Checkbox({
+                store: createCheckboxStore({
+                  checked: computed(state.sync_selection, (ids) => ids.includes(profile.id)),
+                  onChange: (checked) => store.methods.toggle_sync_profile(profile.id, checked),
+                }),
+                text: computed(state.profile_titles, (titles) => titles[profile.id]),
+                class: "sync-profile-option",
+                attributes: { n: "sync-profile-option", "data-profile-id": profile.id },
+              }),
+            }),
+            View({ class: "sync-profile-actions", attributes: { n: "sync-profile-actions" } }, [
+              Button({ store: ui.confirm_sync_profiles$, attributes: { n: "sync-profile-confirm" } }, ["确定"]),
+            ]),
+          ]),
         })],
       }),
       Button({
