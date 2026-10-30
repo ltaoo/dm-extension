@@ -216,7 +216,9 @@ export function CookieSyncModel(client = chrome, request = fetch) {
   return {
     ready,
     run(action, value) {
-      // ponytail: 后台操作串行；单接口请求最多等待 20 秒，高频同步时再按接口拆队列。
+      // 只读请求不能等待同步接口响应，否则打开弹窗也会被网络请求阻塞。
+      if (action === "get") return ready.then(() => ({ profiles: structuredClone(profiles), statuses: structuredClone(statuses) }));
+      // shortcut: 写入和同步串行，高频同步时再按接口拆队列。
       const task = queue.then(async () => {
         await ready;
         if (["save", "sync", "add-domain"].includes(action)) {

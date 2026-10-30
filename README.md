@@ -27,12 +27,13 @@
 
 ## 项目介绍
 
-弹窗主菜单按顺序包含以下四项：
+弹窗主菜单按顺序包含以下五项：
 
 | 菜单 | 可以做什么 | 入口 |
 | --- | --- | --- |
 | Cookie | 分页查看当前站点 Cookie（含 HttpOnly），复制全部或已选项，勾选一个或多个同步配置并添加当前域名 | 弹窗 → Cookie |
 | Cookie 同步 | 管理多个同步接口、域名范围、加密方式与定时任务 | 弹窗 → Cookie 同步 |
+| 定时访问 | 按间隔在后台静音打开网站，停留指定秒数后关闭 | 弹窗 → 定时访问 |
 | 保存页面 | 下载当前页面的 HTML 快照，或无需滚动生成 PNG 长截图 | 弹窗 → 保存页面 |
 | 设置 | 配置域名解析规则，查看项目介绍与版本 | 弹窗 → 设置 → 保存页面 / 关于 |
 
@@ -93,6 +94,16 @@
 2. 按需填写文件名，留空时使用页面标题。
 3. 点击「保存当前页面」下载 HTML 快照；需要整页图片时，点击「保存长截图」下载 PNG。长截图会自动识别主内容区域，展开内容副本并通过 SVG 渲染，无需滚动原页面；检测到独立内容容器时仅保存该区域，排除外部 Header 和侧栏。保存期间保持弹窗打开；图片或字体无法打包时会显示缺失提示。
 
+### 定时访问网站
+
+1. 重新加载扩展，点击左侧「Cookie 同步」下方的「定时访问」。
+2. 点击右上角「新增」，在新记录中填写完整的 HTTP(S) 网址、访问间隔（0.5～10080 分钟）和停留时间（1～86400 秒），点击该记录的「保存」。首次自动访问在一个间隔后执行。
+3. 每条任务直接以表单显示，可原地修改并保存，也可暂停、删除或「立即访问」。有未保存修改时，先保存再启用、暂停或立即访问；新任务在保存前不会执行，关闭弹窗会丢弃未保存修改。暂停会停止后续访问，已打开的任务页仍会按原定时间关闭；同一任务未结束时跳过重复执行。
+
+任务会创建一个不激活的后台标签页，先静音再加载网址，不切换你正在使用的标签或聚焦窗口。停留时间从打开时计算，不等待页面加载完成；到期只关闭本次创建的标签，若你正在查看该任务页则保留它。只使用已有的普通浏览器窗口，不会新建窗口。
+
+浏览器必须保持运行。闹钟可能因休眠、系统繁忙或后台进程调度而延迟，秒数不是严格的实时保证。后台进程重新启动会恢复当前会话的关闭任务；浏览器重启或重新加载扩展后，临时关闭记录会清空，旧任务页可能保留，避免使用过期标签 ID 误关其他页面。后台页面也可能受网站的可见性检测和浏览器节流影响。参见 [Tabs API](https://developer.chrome.com/docs/extensions/reference/api/tabs)、[Alarms API](https://developer.chrome.com/docs/extensions/reference/api/alarms) 和 [session 存储](https://developer.chrome.com/docs/extensions/reference/api/storage#property-session)。
+
 ## 权限与数据
 
 | 权限 | 用途 |
@@ -101,7 +112,7 @@
 | `cookies` | 读取站点 Cookie，供查看、复制和同步 |
 | `userScripts` | 供代码中保留的变更检测模块执行用户脚本，当前主菜单无此入口 |
 | `storage`、`unlimitedStorage` | 保存配置与界面选择，以及保留模块的规则、快照和剪藏记录 |
-| `alarms` | 后台定时同步 Cookie |
+| `alarms` | 后台定时同步 Cookie、访问网站与关闭任务页 |
 | `clipboardWrite` | 复制 Cookie 与域名；保留模块也用于复制页面 HTML 和剪藏结果 |
 | `downloads` | 下载 HTML 页面快照与 PNG 截图 |
 | HTTP(S) 主机权限 | 访问站点内容、读取 Cookie、打包页面资源，并请求用户指定的同步接口 |
@@ -113,6 +124,7 @@
 | `cookie-sync-settings`、`cookie-sync-status` | 同步接口配置与状态；配置包含加密密码 |
 | `popup-page`、`settings-menu`、`cookie-sync-profile` | 上次打开的页面、设置子菜单与同步配置选择 |
 | `page-parsers` | 域名解析规则 |
+| `scheduled-sites` | 定时访问网址、间隔、停留时间与开关 |
 | `comparison-records`、`comparison-group`、`comparison-groups` | 保留的对比模块：页面快照、当前分组与分组列表 |
 | `detection-rules` | 保留的检测模块：规则与列表基线 |
 | `region-clips`、`clip-options` | 保留的剪藏模块：记录与选项 |
@@ -142,7 +154,7 @@ JavaScript 遵循 Model / View 分离：业务状态与逻辑由 Model 维护，
 
 ### 运行检查
 
-仓库没有构建命令或 npm 测试脚本。HTML 测试依赖 ES module 动态导入，不能直接通过 `file://` 运行；在仓库根目录启动静态服务器：
+仓库没有构建命令或 npm 测试脚本。后台任务与同步模型可运行 `node --test test/*.test.js`。HTML 测试依赖 ES module 动态导入，不能直接通过 `file://` 运行；在仓库根目录启动静态服务器：
 
 ```sh
 python3 -m http.server 8791 --bind 127.0.0.1
@@ -152,7 +164,9 @@ python3 -m http.server 8791 --bind 127.0.0.1
 
 | 检查范围 | 测试文件（位于 `test/`） |
 | --- | --- |
+| Popup 启动顺序 | [popup.startup.test.html](test/popup.startup.test.html) |
 | Cookie 与界面偏好 | [popup.cookie.test.html](test/popup.cookie.test.html)、[store.preferences.test.html](test/store.preferences.test.html) |
+| 定时访问 | [popup.scheduled-sites.test.html](test/popup.scheduled-sites.test.html)、[scheduled-sites.model.test.js](test/scheduled-sites.model.test.js) |
 | 页面保存 | [snapshot.model.test.html](test/snapshot.model.test.html)、[screenshot.model.test.html](test/screenshot.model.test.html)、[screenshot.container.test.html](test/screenshot.container.test.html) |
 | 快照与对比 | [compare.model.test.html](test/compare.model.test.html)、[compare.render.test.html](test/compare.render.test.html)、[compare.preview.test.html](test/compare.preview.test.html) |
 | 规则与脚本 | [detection.model.test.html](test/detection.model.test.html)、[detection.script.test.html](test/detection.script.test.html)、[detection.list.test.html](test/detection.list.test.html) |
@@ -167,16 +181,17 @@ python3 -m http.server 8791 --bind 127.0.0.1
 - **Cookie**：刷新、分页、复制全部与已选项、复制域名，以及在同步配置下拉中勾选一个或多个配置添加当前域名（不跳转）。
 - **Cookie 同步**：新增与切换配置、保存、立即同步、定时同步与失败状态；确认复制勾选与同步范围独立，空范围不上传。
 - **保存页面**：自定义文件名、HTML 中文编码与样式、图片和字体打包、资源失败提示，以及 PNG 长截图的主区域识别、底部内容、固定导航、原页面状态保持与内部页面禁用状态。
+- **定时访问**：确认入口在 Cookie 同步下方；添加任务，验证后台静音打开、自动关闭、暂停和删除，并确认当前视频页不切换。
 - **设置**：切换「保存页面 / 关于」，编辑域名解析规则，确认版本显示。
 
 ### 更新版本与资源
 
-- 显示版本来自 [manifest.json](manifest.json) 的 `version_name`（当前 `1.1.0`），内部版本为 `version`（当前 `1.1.0`）；发布时同步修改两者。
-- 将版本修改与代码提交后，推送 tag 即可触发 [Release workflow](.github/workflows/release.yml)，自动打包并上传 `dm-extension.zip` 到对应的 GitHub Release；重复运行会更新同名附件。工作流不会自动修改扩展版本。例如发布 `1.1.0`：
+- 显示版本来自 [manifest.json](manifest.json) 的 `version_name`（当前 `1.2.0`），内部版本为 `version`（当前 `1.2.0`）；发布时同步修改两者。
+- 将版本修改与代码提交后，推送 tag 即可触发 [Release workflow](.github/workflows/release.yml)，自动打包并上传 `dm-extension.zip` 到对应的 GitHub Release；重复运行会更新同名附件。工作流不会自动修改扩展版本。例如发布 `1.2.0`：
 
   ```sh
-  git tag v1.1.0
-  git push origin v1.1.0
+  git tag v1.2.0
+  git push origin v1.2.0
   ```
 
 - UI 资产已随仓库提供。`scripts/sync-ui-assets.sh` 依赖上级目录原主前端的 `src/` 与 `public/`，独立仓库无需执行。

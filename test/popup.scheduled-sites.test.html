@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="zh-CN" data-n="test-document">
+<head data-n="test-head">
+  <meta charset="utf-8" data-n="charset">
+  <link rel="stylesheet" href="../assets/vendor/src/dmui.css" data-n="component-style">
+  <link rel="stylesheet" href="../src/popup/popup.css" data-n="popup-style">
+</head>
+<body data-n="test-body">
+<div id="root" data-n="popup-root"></div>
+<script type="module" data-n="test-script">
+window.addEventListener("error", (event) => document.body.setAttribute("data-test-error", event.error?.stack || event.message));
+window.addEventListener("unhandledrejection", (event) => document.body.setAttribute("data-test-error", String(event.reason?.stack || event.reason)));
+const { default_settings } = await import("../src/models/sync.model.js");
+const { ScheduledSitesModel } = await import("../src/models/scheduled-sites.model.js");
+const data = { "popup-page": "settings", "settings-menu": "scheduled-sites" };
+const session = {};
+const commands = [];
+let fail_save = false;
+const alarms = new Map();
+const tabs = new Map([[1, { id: 1, active: true, url: "https://youtube.com/watch?v=fixture" }]]);
+let next_id = 2;
+const storage = (data) => ({ get: async () => structuredClone(data), set: async (value) => Object.assign(data, structuredClone(value)) });
+globalThis.chrome = {
+  runtime: {
+    getManifest: () => ({ name: "Download & Manage", version: "0.0.0" }),
+    sendMessage: async (message) => {
+      if (message.action !== "scheduled-sites") return { success: true, profiles: [default_settings()], statuses: {} };
+      commands.push(message.command);
+      if (message.command === "save" && fail_save) return { success: false, error: "模拟保存失败" };
+      try { return { success: true, ...await model.run(message.command, message.value) }; }
+      catch (error) { return { success: false, error: error.message }; }
+    },
+  },
+  storage: { local: storage(data), session: storage(session), onChanged: { addListener() {}, removeListener() {} } },
+  windows: { getAll: async () => [{ id: 1, focused: true }] },
+  alarms: {
+    getAll: async () => [...alarms.values()], clear: async (name) => alarms.delete(name),
+    create: async (name, value) => alarms.set(name, { name, ...value }),
+  },
+  tabs: {
+    query: async () => [tabs.get(1)],
+    create: async (value) => { const tab = { ...value, id: next_id++ }; tabs.set(tab.id, tab); return tab; },
+    update: async (id, value) => Object.assign(tabs.get(id), value),
+    get: async (id) => { if (!tabs.has(id)) throw new Error(`No tab with id: ${id}`); return tabs.get(id); },
+    remove: async (id) => tabs.delete(id),
+  },
+};
+const model = ScheduledSitesModel(chrome);
+await import("../src/popup/popup.js");
+const { cookie$ } = await import("../src/models/store.js");
+const store = cookie$.scheduled_sites;
+const wait = async (condition) => {
+  const deadline = Date.now() + 5000;
+  while (!condition()) {
+    if (Date.now() > deadline) throw new Error("等待界面更新超时");
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+};
+const assert = (condition, message) => { if (!condition) throw new Error(message); };
+const record = (id) => document.querySelector(`[data-site-id="${id}"]`);
+const find = (name, id) => (id ? record(id) : document).querySelector(`[n="${name}"]`);
+const fill = (name, value, id) => {
+  const node = find(`scheduled-${name}-input`, id);
+  node.value = value;
+  node.dispatchEvent(new Event("input", { bubbles: true }));
+};
+await wait(() => cookie$.state.page.value === "scheduled-sites" && !cookie$.state.busy.value && !store.state.busy.value);
+assert(!find("scheduled-sites-page").hidden, "旧设置子菜单应迁移到定时访问主菜单");
+assert(data["popup-page"] === "scheduled-sites" && data["settings-menu"] === "savepage", "应保存迁移后的页面位置");
+assert(find("menu-cookie-sync").nextElementSibling === find("menu-scheduled-sites"), "定时访问应位于 Cookie 同步下方");
+assert(!find("settings-menu-scheduled-sites"), "设置子菜单应移除定时访问");
+assert(find("page-header").contains(find("add-scheduled-site-button")) && !find("add-scheduled-site-button").hidden, "新增按钮应在定时访问页右上角");
+assert(!find("scheduled-site-form") && !find("scheduled-site-help") && !find("scheduled-site-message"), "应移除独立添加表单、说明文字和页内提示");
+find("menu-settings").click();
+await wait(() => find("scheduled-sites-page").hidden);
+assert(find("add-scheduled-site-button").hidden, "其他页面不应显示任务新增按钮");
+find("menu-scheduled-sites").click();
+assert(cookie$.state.title.value === "定时访问" && !find("scheduled-sites-page").hidden, "主菜单应打开定时访问页面并显示标题");
+find("add-scheduled-site-button").click();
+assert(!find("popup-toast").hidden && find("popup-toast").textContent === "新任务尚未保存", "新增任务应通过全局 Toast 提示");
+const first_id = store.state.sites.value[0].id;
+assert(store.state.sites.value.length === 1 && find("scheduled-sites-empty").hidden, "新增应立即插入表单记录");
+assert(!data["scheduled-sites"] && !alarms.size, "未保存任务不能写入配置或建立闹钟");
+assert(find("scheduled-site-visit").disabled && find("scheduled-site-toggle").disabled, "草稿保存前不能访问或启用");
+const first_input = find("scheduled-url-input");
+first_input.focus();
+fill("url", "javascript:alert(1)");
+assert(document.activeElement === first_input && first_input === find("scheduled-url-input"), "原地编辑必须保留输入节点和焦点");
+find("scheduled-site-save").click();
+await wait(() => !store.state.busy.value && /HTTP/.test(cookie$.state.message.value));
+assert(!find("popup-toast").hidden && /HTTP/.test(find("popup-toast").textContent), "校验失败应通过全局 Toast 显示错误");
+assert(store.state.sites.value.length === 1 && !data["scheduled-sites"], "无效网址应保留草稿且不保存");
+fill("url", "https://example.com/");
+fill("interval_minutes", "0.5");
+fill("duration_seconds", "1");
+find("scheduled-site-save").click();
+await wait(() => data["scheduled-sites"]?.length === 1 && !store.state.busy.value);
+assert(!find("popup-toast").hidden && find("popup-toast").textContent.includes("任务已保存"), "保存成功应通过全局 Toast 提示");
+assert(find("scheduled-site-summary").textContent.includes("已启用"), "添加任务应显示已启用");
+assert(first_input === find("scheduled-url-input") && !find("scheduled-site-edit"), "保存后应沿用同一表单，无需编辑按钮");
+const row_controls = ["scheduled-interval_minutes-input", "scheduled-duration_seconds-input", "scheduled-site-save"].map(name => find(name).getBoundingClientRect());
+assert(row_controls.every(rect => Math.abs(rect.top + rect.height / 2 - row_controls[0].top - row_controls[0].height / 2) < 2), "间隔、停留和保存按钮应在同一行");
+find("scheduled-site-toggle").click();
+await wait(() => !store.state.sites.value[0].enabled && !store.state.busy.value);
+assert(find("scheduled-site-summary").textContent.includes("已暂停"), "暂停后列表文案应更新");
+find("add-scheduled-site-button").click();
+const draft_id = store.state.sites.value[0].id;
+fill("url", "https://draft.example.com/", draft_id);
+fill("duration_seconds", "25", draft_id);
+fill("duration_seconds", "2", first_id);
+assert(find("scheduled-site-visit", first_id).disabled, "有未保存修改时应先保存再访问");
+fail_save = true;
+find("scheduled-site-save", first_id).click();
+await wait(() => !store.state.busy.value && cookie$.state.message.value === "模拟保存失败");
+assert(!find("popup-toast").hidden && find("popup-toast").textContent === "模拟保存失败", "保存失败应通过全局 Toast 提示");
+assert(find("scheduled-duration_seconds-input", first_id).value === "2" && data["scheduled-sites"][0].duration_seconds === 1, "保存失败应保留编辑内容且不改变已保存配置");
+fail_save = false;
+find("scheduled-site-save", first_id).click();
+await wait(() => data["scheduled-sites"][0].duration_seconds === 2 && !store.state.busy.value);
+assert(store.state.sites.value.length === 2 && find("scheduled-url-input", draft_id).value === "https://draft.example.com/" && find("scheduled-duration_seconds-input", draft_id).value === "25", "保存一条任务不能覆盖另一条草稿");
+const commands_before_remove = commands.length;
+find("scheduled-site-remove", draft_id).click();
+assert(store.state.sites.value.length === 1 && commands.length === commands_before_remove, "删除草稿不应请求后台删除任务");
+assert(!find("popup-toast").hidden && find("popup-toast").textContent === "未保存的任务已删除", "删除草稿应通过全局 Toast 提示");
+find("scheduled-site-visit", first_id).click();
+await wait(() => tabs.size === 2 && !store.state.busy.value);
+assert(tabs.get(1).active && !tabs.get(2).active && tabs.get(2).muted, "立即访问不能激活或打断原标签");
+find("scheduled-site-remove").click();
+await wait(() => store.state.sites.value.length === 0 && !store.state.busy.value);
+assert(tabs.size === 1, "删除任务应关闭其后台标签");
+assert(!find("scheduled-sites-empty").hidden, "删除后应显示空列表提示");
+// 留一个已暂停示例供人工检查布局，不会自动访问网络。
+find("add-scheduled-site-button").click();
+fill("url", "https://example.com/a-long-page-path-for-scheduled-visits");
+fill("interval_minutes", "60");
+fill("duration_seconds", "10");
+find("scheduled-site-save").click();
+await wait(() => store.state.sites.value.length === 1 && !store.state.busy.value);
+find("scheduled-site-toggle").click();
+await wait(() => !store.state.sites.value[0].enabled && !store.state.busy.value);
+fill("duration_seconds", "99");
+find("add-scheduled-site-button").click();
+const { CookieViewModel } = await import("../src/models/store.js");
+const reopened = CookieViewModel(chrome, { writeText: async () => {} });
+await reopened.methods.ready();
+assert(reopened.state.page.value === "scheduled-sites" && reopened.scheduled_sites.state.sites.value.length === 1, "重新打开应恢复主菜单位置与现有任务");
+assert(reopened.scheduled_sites.state.sites.value[0].duration_seconds === 10, "重新打开只恢复已保存的配置");
+reopened.methods.dispose();
+find("scheduled-site-remove").click();
+fill("duration_seconds", "10");
+document.body.setAttribute("data-test-passed", "true");
+</script>
+</body>
+</html>

@@ -74,7 +74,7 @@ window.addEventListener("unhandledrejection", (event) => document.body.setAttrib
 await import("../src/popup/popup.js");
 const { cookie$ } = await import("../src/models/store.js");
 for (let attempts = 0; cookie$.state.busy.value && attempts < 120; attempts += 1) await new Promise((resolve) => requestAnimationFrame(resolve));
-cookie$.methods.navigate("clip");
+await cookie$.methods.navigate("clip");
 
 
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));

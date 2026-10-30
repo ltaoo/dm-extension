@@ -6,12 +6,13 @@ import { capture_snapshot } from "../save/snapshot.model.js";
 import { capture_page_screenshot } from "../save/screenshot.model.js";
 import { USER_SCRIPT_TYPES, build_list_code, build_script_code, describe_rule, describe_shape, detection_rules_key, evaluate_detection_rule, hostname_of, normalize_detection_rules, number_rules, read_baseline } from "../compare/detection.model.js";
 import { build_clip_document, clip_options_key, clip_region, clips_key, default_clip_options, normalize_clip_options, normalize_clip_records } from "../clip/clip.model.js";
+import { ScheduledSitesViewModel } from "./scheduled-sites.store.js";
 
 const { ref, computed, combine, vm } = globalThis.Timeless;
 
 // 页面解析器：内置飞书域名 + 用户配置的域名规则共同决定。
 const PARSER_LABELS = { generic: "通用", feishu: "飞书文档" };
-const PAGE_TITLES = { cookie: "Cookie", "cookie-sync": "Cookie 同步", "save-page": "保存页面", savepage: "对比", clip: "剪藏", detect: "变更检测", settings: "设置" };
+const PAGE_TITLES = { cookie: "Cookie", "cookie-sync": "Cookie 同步", "scheduled-sites": "定时访问", "save-page": "保存页面", savepage: "对比", clip: "剪藏", detect: "变更检测", settings: "设置" };
 const COOKIE_PAGE_SIZE = 50;
 const parsers_key = "page-parsers";
 const comparison_records_key = "comparison-records";
@@ -227,6 +228,7 @@ function read_page_html(rules, replace_assets = true) {
 }
 
 export function CookieViewModel(client = chrome, clipboard = navigator.clipboard, confirm_remove = (message) => window.confirm(message)) {
+  const scheduled_sites = ScheduledSitesViewModel(client, show_message);
   const manifest = client.runtime.getManifest();
   const cookies_ = ref([]);
   const selected_ = ref(new Set());
@@ -316,6 +318,7 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
   let disposed = false;
   let cookies_requested = false;
   let page_requested = false;
+  const page_data = new Map();
   const profile_buttons = new Map();
   const domain_buttons = new Map();
   const group_buttons = new Map();
@@ -445,6 +448,15 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
       clip_records_.as([]);
       clip_feedback_.as(`读取剪藏记录失败：${error.message}`);
     }
+  }
+
+  function load_saved_page(page) {
+    if (disposed) return;
+    if (page === "scheduled-sites") return scheduled_sites.methods.load();
+    const load = { savepage: load_comparisons, clip: load_clips, detect: load_detection_rules }[page];
+    if (!load) return;
+    if (!page_data.has(page)) page_data.set(page, load());
+    return page_data.get(page);
   }
 
   // 颜色 / 内容规则：注入自包含求值函数到页面主世界。
@@ -741,6 +753,7 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
       client.storage.local.set({ "popup-page": page }).catch((error) => show_message(`保存页面位置失败：${error.message}`));
       page_transition_timer = setTimeout(() => leaving_page_.as(""), 180);
       load_page_later();
+      if (initialized) return load_saved_page(page);
     },
     async ready() {
       client.storage.onChanged.addListener(on_storage_changed);
@@ -750,17 +763,14 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
           return {};
         }),
         load_parsers(),
-        load_comparisons(),
-        load_clips(),
-        load_detection_rules(),
         load_tab().catch((error) => cookie_error_.as(error.message)),
         send("get").catch((error) => show_message(error.message)),
       ]);
-      let saved_page = saved["popup-page"] === "settings" && saved["settings-menu"] === "cookie-sync" ? "cookie-sync" : saved["popup-page"];
+      let saved_page = saved["popup-page"] === "settings" && ["cookie-sync", "scheduled-sites"].includes(saved["settings-menu"]) ? saved["settings-menu"] : saved["popup-page"];
       if (["savepage", "clip", "detect"].includes(saved_page)) saved_page = "save-page";
       if (!navigated && Object.hasOwn(PAGE_TITLES, saved_page)) page_.as(saved_page);
-      if (saved["settings-menu"] === "cookie-sync") {
-        await client.storage.local.set({ "popup-page": page_.value, "settings-menu": "savepage" }).catch((error) => show_message(`迁移同步页面位置失败：${error.message}`));
+      if (["cookie-sync", "scheduled-sites"].includes(saved["settings-menu"])) {
+        await client.storage.local.set({ "popup-page": page_.value, "settings-menu": "savepage" }).catch((error) => show_message(`迁移页面位置失败：${error.message}`));
       }
       if (!settings_navigated && ["savepage", "about"].includes(saved["settings-menu"])) settings_menu_.as(saved["settings-menu"]);
       if (profiles_.value.some((profile) => profile.id === saved["cookie-sync-profile"])) active_profile_.as(saved["cookie-sync-profile"]);
@@ -768,6 +778,7 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
       busy_.as(false);
       initialized = true;
       load_page_later();
+      return load_saved_page(page_.value);
     },
     dispose() {
       disposed = true;
@@ -1297,6 +1308,7 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
     menu: [
       { name: "cookie", title: "Cookie", icon: "file-lock" },
       { name: "cookie-sync", title: "Cookie 同步", icon: "refresh-cw" },
+      { name: "scheduled-sites", title: "定时访问", icon: "clock" },
       { name: "save-page", title: "保存页面", icon: "download" },
       { name: "settings", title: "设置", icon: "settings" },
     ].map((item) => ({ ...item, button$: new vm.ButtonCore({ variant: "ghost", onClick: () => methods.navigate(item.name) }) })),
@@ -1413,7 +1425,7 @@ export function CookieViewModel(client = chrome, clipboard = navigator.clipboard
     onSelectAll: () => methods.select_all(!state.all_selected.value),
     onSelect: (cookie) => methods.select(cookie.index, !selected_.value.has(cookie.index)),
   };
-  return { state, ui, methods };
+  return { state, ui, methods, scheduled_sites };
 }
 
 export const cookie$ = CookieViewModel();

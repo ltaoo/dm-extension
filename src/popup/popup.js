@@ -5,6 +5,7 @@ import { cookie$ } from "../models/store.js";
 import { Button } from "../../assets/vendor/src/dmui.js";
 import CookiePageView from "../pages/cookie.js";
 import CookieSyncPageView from "../pages/cookie-sync.js";
+import ScheduledSitesPageView from "../pages/scheduled-sites.js";
 import SavePageView from "../pages/savepage.js";
 import DownloadPageView from "../pages/download.js";
 import ClipPageView from "../pages/clip.js";
@@ -50,10 +51,12 @@ function PopupView() {
         ]),
         Button({ store: controls.refresh$, attributes: { n: "refresh-button", hidden: computed(state.page, (page) => page !== "cookie" ? true : undefined) } }, [computed(state.loading, (loading) => loading ? "读取中…" : "刷新")]),
         Button({ store: controls.add_profile$, attributes: { n: "add-profile-button", hidden: computed(state.page, (page) => page !== "cookie-sync" ? true : undefined) } }, ["新增"]),
+        Button({ store: cookie$.scheduled_sites.ui.add, attributes: { n: "add-scheduled-site-button", hidden: computed(state.page, (page) => page !== "scheduled-sites" ? true : undefined) } }, ["新增"]),
       ]),
       View({ class: "popup-pages", attributes: { n: "popup-pages" } }, [
         CookiePageView({ store: cookie$ }),
         CookieSyncPageView({ store: cookie$ }),
+        ScheduledSitesPageView({ store: cookie$ }),
         DownloadPageView({ store: cookie$ }),
         SavePageView({ store: cookie$ }),
         ClipPageView({ store: cookie$ }),
@@ -66,5 +69,14 @@ function PopupView() {
 }
 
 DOM.render(PopupView(), document.querySelector("#root"));
-window.addEventListener("pagehide", cookie$.methods.dispose, { once: true });
-cookie$.methods.ready();
+document.querySelector('[data-n="popup-loading-shell"]')?.remove();
+let startup_timer;
+// 应用界面也先完成一帧绘制，再开始读取偏好、配置和页面数据。
+const startup_frame = requestAnimationFrame(() => {
+  startup_timer = setTimeout(() => cookie$.methods.ready(), 0);
+});
+window.addEventListener("pagehide", () => {
+  cancelAnimationFrame(startup_frame);
+  clearTimeout(startup_timer);
+  cookie$.methods.dispose();
+}, { once: true });

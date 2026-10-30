@@ -10,7 +10,21 @@
     <link rel="stylesheet" href="popup.css" data-n="popup-style" />
   </head>
   <body data-n="popup-body">
-    <div id="root" data-n="popup-root"></div>
-    <script type="module" src="popup.js" data-n="popup-entry"></script>
+    <div id="root" data-n="popup-root">
+      <div class="popup-shell" data-n="popup-loading-shell" aria-busy="true">
+        <aside class="popup-sidebar" data-n="popup-loading-sidebar">
+          <div class="popup-brand" data-n="popup-loading-brand">
+            <img src="../../assets/icons/logo.svg" alt="D&amp;M" width="42" height="42" data-n="popup-loading-logo" />
+          </div>
+        </aside>
+        <main class="popup-main" data-n="popup-loading-main">
+          <header class="popup-header" data-n="popup-loading-header">
+            <div class="popup-title" data-n="popup-loading-title">Download &amp; Manage</div>
+          </header>
+          <div class="settings-scroll page-help" role="status" data-n="popup-loading">正在加载…</div>
+        </main>
+      </div>
+    </div>
+    <script type="module" src="bootstrap.js" data-n="popup-entry"></script>
   </body>
 </html>

@@ -63,6 +63,7 @@ function create_client({ tab_url = "https://example.com/page", stored = records 
   const written = [];
   const store = CookieViewModel(client, { writeText: async (text) => written.push(text) });
   await store.methods.ready();
+  await store.methods.navigate("clip");
   if (store.state.clip_count.value !== 2) throw new Error(`前置条件：应加载 2 条剪藏记录，实际 ${store.state.clip_count.value}`);
   await store.methods.copy_clip("c1");
   if (written[0] !== '<div style="all:initial!important">卡</div>') throw new Error(`剪贴板应写入片段：${written[0]}`);
@@ -74,6 +75,7 @@ function create_client({ tab_url = "https://example.com/page", stored = records 
 {
   const store = CookieViewModel(create_client(), { writeText: async () => { throw new Error("clipboard denied"); } });
   await store.methods.ready();
+  await store.methods.navigate("clip");
   await store.methods.copy_clip("c1");
   if (store.state.clip_copied.value !== "") throw new Error("复制失败不应标记已复制");
   if (store.state.clip_feedback.value !== "复制失败：clipboard denied") throw new Error(`应反馈复制失败原因：${store.state.clip_feedback.value}`);
@@ -86,6 +88,7 @@ function create_client({ tab_url = "https://example.com/page", stored = records 
   const client = create_client();
   const store = CookieViewModel(client, { writeText: async () => {} }, () => true);
   await store.methods.ready();
+  await store.methods.navigate("clip");
   await store.methods.open_clip("c2");
   if (client.created.at(-1)?.url !== "chrome-extension://test/src/clip/clip.html?id=c2") throw new Error(`应打开该条结果页：${client.created.at(-1)?.url}`);
 
@@ -104,6 +107,7 @@ function create_client({ tab_url = "https://example.com/page", stored = records 
   const client = create_client({ tab_url: "about:blank" });
   const store = CookieViewModel(client, { writeText: async () => {} });
   await store.methods.ready();
+  await store.methods.navigate("clip");
   const before = closed;
   await store.methods.start_clip();
   if (client.calls.some((call) => call.func?.name === "clip_region")) throw new Error("非 HTTP(S) 页面不应注入选择器");
@@ -117,6 +121,7 @@ function create_client({ tab_url = "https://example.com/page", stored = records 
   const client = create_client();
   const store = CookieViewModel(client, { writeText: async () => {} });
   await store.methods.ready();
+  await store.methods.navigate("clip");
   if (store.state.clip_available.value !== true) throw new Error("HTTP(S) 页面应标记为可剪");
   const before = closed;
   await store.methods.start_clip();
@@ -135,6 +140,7 @@ function create_client({ tab_url = "https://example.com/page", stored = records 
   const client = create_client();
   const store = CookieViewModel(client, { writeText: async () => {} });
   await store.methods.ready();
+  await store.methods.navigate("clip");
   await store.methods.set_clip_option("inline_images", true);
   if (store.state.clip_options.value.inline_images !== true) throw new Error("选项应立即生效");
   if (client.writes["clip-options"]?.inline_images !== true) throw new Error("选项应写回存储");

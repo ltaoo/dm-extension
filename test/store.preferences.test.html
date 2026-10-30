@@ -28,7 +28,7 @@ for (const [hostname, expected] of [
 function create_client(data = {}) {
   const client = {
     data,
-    cookie_reads: 0, page_reads: 0,
+    cookie_reads: 0, page_reads: 0, storage_reads: [],
     statuses: {}, actions: [],
     downloads: { download: async () => 1 },
     profiles: [default_settings("first", "配置一"), default_settings("second", "配置二")],
@@ -49,6 +49,8 @@ function create_client(data = {}) {
       local: {
         async get(keys) {
           const wanted = Array.isArray(keys) ? keys : [keys];
+          client.storage_reads.push(...wanted);
+          await client.before_storage?.(wanted);
           if (wanted.includes("popup-page")) await client.before_preferences?.();
           return structuredClone(Object.fromEntries(wanted.map((key) => [key, data[key]])));
         },
@@ -71,6 +73,35 @@ const open = async (client, confirm_remove = () => true) => {
   await store.methods.ready();
   return store;
 };
+
+// 历史快照和剪藏可能很大，打开任一主菜单时都不能读取或等待它们。
+for (const page of ["cookie", "cookie-sync", "save-page", "settings", "savepage", "clip", "detect"]) {
+  const client = create_client({ "popup-page": page });
+  const heavy_keys = ["comparison-records", "region-clips", "detection-rules"];
+  client.before_storage = (keys) => keys.some(key => heavy_keys.includes(key)) ? new Promise(() => {}) : undefined;
+  const store = CookieViewModel(client, { writeText: async () => {} });
+  let ready = false;
+  const pending = store.methods.ready().then(() => { ready = true; });
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert(ready && !store.state.busy.value, "弹窗初始化不能等待未打开页面的数据");
+  assert(!client.storage_reads.some(key => heavy_keys.includes(key)), "主菜单不能读取隐藏模块的历史数据");
+  await pending;
+  store.methods.dispose();
+}
+
+// 进入保留页面才读取对应数据，同一弹窗内再次进入沿用当前状态。
+{
+  const client = create_client();
+  const store = await open(client);
+  for (const [page, key] of [["savepage", "comparison-records"], ["clip", "region-clips"], ["detect", "detection-rules"]]) {
+    await store.methods.navigate(page);
+    assert(client.storage_reads.filter(item => item === key).length === 1, "进入页面应读取对应历史数据");
+    store.methods.navigate("settings");
+    await store.methods.navigate(page);
+    assert(client.storage_reads.filter(item => item === key).length === 1, "再次进入不能重复读取或覆盖本次状态");
+  }
+  store.methods.dispose();
+}
 
 // 切换后重新创建 Model，恢复同步页面和配置；无需保存配置内容。
 {

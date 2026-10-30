@@ -148,6 +148,11 @@ body { color: var(--dm-color-text-primary); background: var(--dm-color-bg-canvas
 .settings-menu-button.is-active { color: var(--dm-color-primary); background: var(--dm-color-primary-soft); }
 .settings-content { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; }
 .settings-panel { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; }
+.scheduled-site-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.scheduled-sites-page .settings-field { display: grid; grid-template-columns: 84px minmax(0, 1fr); }
+.scheduled-sites-page .settings-field .dm-label { white-space: nowrap; }
+.scheduled-site-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)) auto; gap: 12px; }
+.scheduled-site-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .parser-list-heading, .parser-row { display: flex; align-items: center; gap: 8px; }
 .parser-list-heading { justify-content: space-between; }
 .parser-row > .dm-input-affix-wrapper { flex: 1; min-width: 0; }

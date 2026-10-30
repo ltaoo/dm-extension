@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="zh-CN" data-n="test-document">
+<head data-n="test-head"><meta charset="utf-8" data-n="charset"></head>
+<body data-n="test-body">
+<iframe id="popup" title="Popup 启动测试" width="780" height="580" data-n="popup-test-frame"></iframe>
+<script type="module" data-n="test-script">
+window.addEventListener("error", (event) => document.body.setAttribute("data-test-error", event.error?.stack || event.message));
+window.addEventListener("unhandledrejection", (event) => document.body.setAttribute("data-test-error", String(event.reason?.stack || event.reason)));
+const assert = (condition, message) => { if (!condition) throw new Error(message); };
+const wait = async (condition) => {
+  const deadline = Date.now() + 10000;
+  while (!condition()) {
+    if (Date.now() > deadline) throw new Error("等待 Popup 启动超时");
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+};
+const frame = document.querySelector("#popup");
+const calls = [];
+let release;
+const gate = new Promise(resolve => { release = resolve; });
+const observe = (kind) => calls.push({
+  kind, loaded: frame.contentWindow.popup_loaded,
+  frames: frame.contentWindow.popup_frames || 0,
+  shell: Boolean(frame.contentDocument.querySelector('[n="popup-shell"]')),
+  loading_shell: Boolean(frame.contentDocument.querySelector('[data-n="popup-loading-shell"]')),
+});
+const { default_settings } = await import("../src/models/sync.model.js");
+const data = { "popup-page": "scheduled-sites" };
+window.popup_test_client = {
+  runtime: {
+    getManifest() { observe("manifest"); return { name: "Download & Manage", version: "0.0.0" }; },
+    async sendMessage() {
+      observe("message");
+      await gate;
+      return { success: true, profiles: [default_settings()], statuses: {}, sites: [] };
+    },
+  },
+  storage: {
+    local: {
+      async get(keys) {
+        observe("storage");
+        await gate;
+        return Object.fromEntries((Array.isArray(keys) ? keys : [keys]).map(key => [key, data[key]]));
+      },
+      async set(value) { Object.assign(data, value); },
+    },
+    onChanged: { addListener() {}, removeListener() {} },
+  },
+  tabs: { async query() { observe("tabs"); await gate; return [{ id: 1, url: "https://example.com/" }]; } },
+};
+const html = await (await fetch("../src/popup/popup.html")).text();
+const doc = new DOMParser().parseFromString(html, "text/html");
+const base = doc.createElement("base");
+base.href = new URL("../src/popup/", location.href).href;
+base.dataset.n = "popup-test-base";
+doc.head.prepend(base);
+const stub = doc.createElement("script");
+stub.dataset.n = "popup-test-client";
+stub.textContent = `
+  window.chrome = parent.popup_test_client;
+  window.addEventListener("error", event => parent.document.body.setAttribute("data-test-error", event.message));
+  window.addEventListener("unhandledrejection", event => parent.document.body.setAttribute("data-test-error", String(event.reason)));
+  window.addEventListener("load", () => { window.popup_loaded = true; }, { once: true });
+  const native_frame = window.requestAnimationFrame;
+  window.requestAnimationFrame = callback => native_frame.call(window, time => {
+    window.popup_frames = (window.popup_frames || 0) + 1;
+    callback(time);
+  });
+`;
+doc.head.append(stub);
+frame.srcdoc = "<!doctype html>" + doc.documentElement.outerHTML;
+await wait(() => calls.some(call => call.kind === "message"));
+assert(calls[0].kind === "manifest" && calls[0].loaded && calls[0].frames >= 1 && calls[0].loading_shell, "业务模块必须在 load 和静态外壳首帧之后加载");
+assert(calls.filter(call => call.kind !== "manifest").every(call => call.frames >= 2 && call.shell && !call.loading_shell), "所有数据读取必须在应用界面绘制之后开始");
+assert(frame.contentDocument.querySelector('[n="menu-scheduled-sites"]'), "数据未返回时必须已显示导航");
+assert(frame.contentDocument.querySelector('[n="add-profile-button"]').disabled, "慢数据返回前应保持加载状态");
+release();
+await wait(() => !frame.contentDocument.querySelector('[n="scheduled-sites-page"]').hidden && !frame.contentDocument.querySelector('[n="add-scheduled-site-button"]').disabled);
+assert(calls.filter(call => call.kind !== "manifest").every(call => call.frames >= 2 && call.shell), "恢复页面的数据读取也必须在界面显示后执行");
+document.body.setAttribute("data-test-passed", "true");
+</script>
+</body>
+</html>

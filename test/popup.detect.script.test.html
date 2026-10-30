@@ -106,7 +106,7 @@ window.addEventListener("unhandledrejection", (event) => document.body.setAttrib
 await import("../src/popup/popup.js");
 const { cookie$ } = await import("../src/models/store.js");
 for (let attempts = 0; cookie$.state.busy.value && attempts < 120; attempts += 1) await new Promise((resolve) => requestAnimationFrame(resolve));
-cookie$.methods.navigate("detect");
+await cookie$.methods.navigate("detect");
 
 
 const row_of = (name) => Array.from(document.querySelectorAll(".detection-rule-row"))

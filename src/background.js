@@ -1,14 +1,25 @@
 import { alarm_name, CookieSyncModel } from "./models/sync.model.js";
 import { build_clip_record, extract_region, save_clips, verify_no_external_refs } from "./clip/clip.model.js";
 import { fetch_snapshot_resource } from "./save/snapshot.model.js";
+import { close_alarm_prefix, ScheduledSitesModel, visit_alarm_prefix } from "./models/scheduled-sites.model.js";
 
 const sync$ = CookieSyncModel();
 sync$.ready.catch(console.error);
+const scheduled_sites$ = ScheduledSitesModel();
+scheduled_sites$.ready.catch(console.error);
 
 const SYNC_ACTIONS = new Set(["get", "save", "sync", "remove", "add-domain"]);
 
 chrome.runtime.onMessage.addListener((message, sender, respond) => {
   if (sender.id !== chrome.runtime.id) return;
+  if (message?.action === "scheduled-sites") {
+    if (!sender.url?.startsWith(chrome.runtime.getURL("")) || !["get", "save", "remove", "visit"].includes(message.command)) return;
+    scheduled_sites$.run(message.command, message.value).then(
+      (result) => respond({ success: true, ...result }),
+      (error) => respond({ success: false, error: error.message }),
+    );
+    return true;
+  }
   if (message?.action === "snapshot-resource" && sender.tab?.id) {
     fetch_snapshot_resource(message.url).then(
       (result) => respond({ success: true, ...result }),
@@ -48,6 +59,12 @@ async function clip_region(message, sender) {
 }
 
 chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name.startsWith(visit_alarm_prefix)) {
+    scheduled_sites$.run("alarm", { id: alarm.name.slice(visit_alarm_prefix.length) }).catch(console.error);
+  }
+  if (alarm.name.startsWith(close_alarm_prefix)) {
+    scheduled_sites$.run("close", { id: alarm.name.slice(close_alarm_prefix.length) }).catch(console.error);
+  }
   if (alarm.name.startsWith(`${alarm_name}:`)) {
     sync$.run("alarm", { id: alarm.name.slice(alarm_name.length + 1) }).catch(console.error);
   }
